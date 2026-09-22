@@ -1,0 +1,90 @@
+# Local PostgreSQL for development.
+# Host port 5433 is used (not 5432) to avoid clashing with a local Postgres install.
+services:
+  db:
+    image: postgres:17.6
+    container_name: ticketing-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ticket
+      POSTGRES_PASSWORD: ticket
+      POSTGRES_DB: ticketing
+    ports:
+      - "5433:5432"
+    volumes:
+      - ticketing_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ticket -d ticketing"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  payment-sim:
+    build:
+      context: .
+      dockerfile: packages/payment-sim/Dockerfile
+    container_name: ticketing-payment-sim
+    restart: unless-stopped
+    environment:
+      PORT: 4100
+      SIM_SEED: 1
+    ports:
+      - "4100:4100"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4100/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+    container_name: ticketing-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  dts-emulator:
+    image: mcr.microsoft.com/dts/dts-emulator@sha256:361323065a608d605f9d3ae56b854eb11f1c47fcc16845a37f948f03ca9c5fac
+    container_name: ticketing-dts-emulator
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    container_name: ticketing-azurite
+    restart: unless-stopped
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    volumes:
+      - ticketing_azurite:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:10000/devstoreaccount1?comp=list').then(r=>process.exit(r.status===403?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  ticketing_pgdata:
+  ticketing_azurite:

@@ -1,0 +1,36 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# pre-commit secret guard  (tracked copy — the live hook lives in .git/hooks/)
+#
+# Install / re-install after a fresh clone:
+#   cp scripts/git-hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#
+# Blocks commits that add (a) a real .env file, or (b) content that looks like
+# a live secret/token. Escape hatch for a genuine false positive:  git commit --no-verify
+# ---------------------------------------------------------------------------
+fail=0
+
+# (a) Refuse real env files (allow the *.example templates)
+envfiles=$(git diff --cached --name-only --diff-filter=AM \
+  | grep -E '(^|/)\.env($|\.)' | grep -vE '\.example$')
+if [ -n "$envfiles" ]; then
+  echo "✖ pre-commit: refusing to commit env file(s) that may hold secrets:"
+  echo "$envfiles" | sed 's/^/      /'
+  echo "  → these belong in .gitignore; commit a redacted .env.example instead."
+  fail=1
+fi
+
+# (b) Scan added lines for high-confidence secret patterns (token prefixes,
+#     private-key blocks, cloud keys). Deliberately does NOT match the word
+#     "password" so demo/seed literals don't false-positive.
+pattern='re_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}'
+hits=$(git diff --cached --diff-filter=AM -U0 | grep -E '^\+' | grep -vE '^\+\+\+' | grep -EIn "$pattern")
+if [ -n "$hits" ]; then
+  echo "✖ pre-commit: staged changes look like they contain a live secret/token:"
+  echo "$hits" | head -6 | sed 's/^/      /'
+  echo "  → move it to an env var / gitignored .env. False positive? git commit --no-verify"
+  fail=1
+fi
+
+[ "$fail" -eq 0 ] || echo ""
+exit $fail

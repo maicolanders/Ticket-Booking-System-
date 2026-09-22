@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Builds
+dist/
+build/
+packages/web/dist/
+packages/api/dist/
+
+# Environment / secrets — ignore EVERY env file; keep only the committed *.example templates
+.env
+.env.*
+!.env.example
+*.local
+
+# Secret material — keys, certs, credentials. Never commit these.
+*.pem
+*.key
+*.pfx
+*.p12
+*.keystore
+id_rsa*
+*.crt
+secrets.json
+credentials.json
+service-account*.json
+
+# Prisma
+packages/api/prisma/*.db
+packages/api/prisma/*.db-journal
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage / test output
+coverage/
+.nyc_output/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local (machine-specific) settings — keep launch.json, ignore local perms
+.claude/settings.local.json
+
+# Serena codebase encoding and local project state
+.serena/
+
+# Deliverable artifact
+ticket-booking-source.zip

@@ -1,0 +1,38 @@
+{
+  "name": "ticket-booking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ticket booking platform for movies & concerts — seat holds, waitlists, QR tickets.",
+  "workspaces": [
+    "packages/shared",
+    "packages/api",
+    "packages/web",
+    "packages/payment-sim",
+    "packages/acceptance"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @ticket/api\" \"npm run dev -w @ticket/web\"",
+    "build": "npm run build -w @ticket/api && npm run build -w @ticket/web",
+    "start": "npm run start -w @ticket/api",
+    "db:generate": "npm run db:generate -w @ticket/api",
+    "db:migrate": "npm run db:migrate -w @ticket/api",
+    "db:deploy": "npm run db:deploy -w @ticket/api",
+    "db:seed": "npm run db:seed -w @ticket/api",
+    "db:reset": "npm run db:reset -w @ticket/api",
+    "test": "npm run test -w @ticket/api",
+    "test:sim": "npm run test -w @ticket/payment-sim",
+    "test:acceptance": "npm run test -w @ticket/acceptance",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v",
+    "doctor": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/doctor.ts",
+    "lint": "npm run lint -w @ticket/api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "tsx": "4.19.2"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  }
+}

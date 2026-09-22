@@ -1,0 +1,153 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+ * Marquee Nights — base theme
+ * ==========================================================================*/
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink font-sans text-cream antialiased;
+  /* A faint theatrical glow bleeding from the top of every page. */
+  background-image: radial-gradient(1200px 600px at 50% -200px, rgba(224, 164, 74, 0.06), transparent 70%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(224, 164, 74, 0.3);
+  color: #fff;
+}
+
+/* Consistent, visible keyboard focus everywhere. */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #14101b, 0 0 0 4px rgba(224, 164, 74, 0.7);
+  border-radius: 4px;
+}
+
+@layer base {
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+  }
+}
+
+/* ---- Scrollbars -------------------------------------------------------- */
+.thin-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-ink-500;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Hide scrollbar for horizontal discovery rails (still scrollable). */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ============================================================================
+ * Signature: the ticket stub
+ * A perforated tear line with two notches punched from the card's edges.
+ * Notches are filled with the page background so they read as holes.
+ * ==========================================================================*/
+
+.perf-divider {
+  position: relative;
+  height: 0;
+  border-top: 2px dashed theme('colors.ink.600');
+  margin: 0 -1px; /* reach the card border */
+}
+.perf-divider::before,
+.perf-divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  height: 16px;
+  width: 16px;
+  transform: translateY(-50%);
+  background: theme('colors.ink.DEFAULT');
+  border-radius: 9999px;
+}
+.perf-divider::before {
+  left: -9px;
+  box-shadow: inset -1px 0 0 theme('colors.ink.600');
+}
+.perf-divider::after {
+  right: -9px;
+  box-shadow: inset 1px 0 0 theme('colors.ink.600');
+}
+
+/* ---- Marquee bulbs: a row of theatre lights used as an accent ---------- */
+.marquee-bulbs {
+  display: flex;
+  gap: 10px;
+}
+.marquee-bulbs > span {
+  height: 6px;
+  width: 6px;
+  border-radius: 9999px;
+  background: theme('colors.brass.DEFAULT');
+  box-shadow: 0 0 8px 1px rgba(224, 164, 74, 0.7);
+}
+
+/* ---- Shimmer used by skeleton loaders ---------------------------------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  @apply bg-ink-700;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  animation: shimmer 1.7s infinite;
+}
+
+/* Diagonal hatch used to mark booked/unavailable seats (colour-independent). */
+.hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.14) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+/* ============================================================================
+ * Reduced motion: honour the user's preference.
+ * ==========================================================================*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .skeleton::after {
+    animation: none;
+  }
+}

@@ -1,0 +1,269 @@
+// Ticket Booking System — data model
+// See SYSTEM_DESIGN.md for the seat-hold, concurrency, and waitlist rationale.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  ORGANISER
+  ADMIN
+}
+
+enum EventType {
+  MOVIE
+  CONCERT
+}
+
+enum SeatStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+}
+
+enum HoldStatus {
+  ACTIVE
+  CONVERTED
+  RELEASED
+  EXPIRED
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+enum WaitlistStatus {
+  WAITING
+  OFFERED
+  CONVERTED
+  EXPIRED
+  CANCELLED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+
+  events          Event[]
+  bookings        Booking[]
+  holds           Hold[]
+  waitlistEntries WaitlistEntry[]
+}
+
+model Venue {
+  id        String   @id @default(cuid())
+  name      String
+  address   String
+  createdAt DateTime @default(now())
+
+  categories SeatCategory[]
+  seats      VenueSeat[]
+  shows      Show[]
+}
+
+model SeatCategory {
+  id      String @id @default(cuid())
+  venueId String
+  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  name    String
+  color   String @default("#6366f1")
+
+  seats           VenueSeat[]
+  pricing         ShowPricing[]
+  showSeats       ShowSeat[]
+  waitlistEntries WaitlistEntry[]
+
+  @@index([venueId])
+}
+
+// Physical seat in a venue's layout (the template snapshotted per show).
+model VenueSeat {
+  id         String       @id @default(cuid())
+  venueId    String
+  venue      Venue        @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   SeatCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  rowLabel   String
+  colNumber  Int
+  gridRow    Int
+  gridCol    Int
+
+  showSeats ShowSeat[]
+
+  @@unique([venueId, rowLabel, colNumber])
+  @@index([venueId])
+}
+
+model Event {
+  id          String    @id @default(cuid())
+  organiserId String
+  organiser   User      @relation(fields: [organiserId], references: [id], onDelete: Cascade)
+  title       String
+  description String    @default("")
+  type        EventType
+  imageUrl    String    @default("")
+  genre       String    @default("")
+  createdAt   DateTime  @default(now())
+
+  shows Show[]
+
+  @@index([organiserId])
+  @@index([type])
+}
+
+// A specific screening / performance = event + venue + datetime.
+model Show {
+  id        String    @id @default(cuid())
+  eventId   String
+  event     Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  venueId   String
+  venue     Venue     @relation(fields: [venueId], references: [id])
+  startsAt  DateTime
+  endsAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  pricing         ShowPricing[]
+  seats           ShowSeat[]
+  holds           Hold[]
+  bookings        Booking[]
+  waitlistEntries WaitlistEntry[]
+
+  @@index([eventId])
+  @@index([venueId])
+  @@index([startsAt])
+}
+
+model ShowPricing {
+  id             String       @id @default(cuid())
+  showId         String
+  show           Show         @relation(fields: [showId], references: [id], onDelete: Cascade)
+  seatCategoryId String
+  seatCategory   SeatCategory @relation(fields: [seatCategoryId], references: [id])
+  price          Decimal      @db.Decimal(10, 2)
+
+  @@unique([showId, seatCategoryId])
+  @@index([showId])
+}
+
+// Per-show seat with live status. One row per physical seat per show =
+// the single source of truth that structurally prevents double-selling.
+model ShowSeat {
+  id             String       @id @default(cuid())
+  showId         String
+  show           Show         @relation(fields: [showId], references: [id], onDelete: Cascade)
+  venueSeatId    String
+  venueSeat      VenueSeat    @relation(fields: [venueSeatId], references: [id])
+  seatCategoryId String
+  seatCategory   SeatCategory @relation(fields: [seatCategoryId], references: [id])
+  status         SeatStatus   @default(AVAILABLE)
+  holdId         String?
+  hold           Hold?        @relation(fields: [holdId], references: [id])
+  updatedAt      DateTime     @updatedAt
+
+  bookingSeats BookingSeat[]
+  offers       WaitlistOffer[]
+
+  @@unique([showId, venueSeatId])
+  @@index([showId, status])
+  @@index([showId, seatCategoryId, status])
+  @@index([holdId])
+}
+
+// Groups the seats a customer is holding during one checkout.
+model Hold {
+  id        String     @id @default(cuid())
+  showId    String
+  show      Show       @relation(fields: [showId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status    HoldStatus @default(ACTIVE)
+  expiresAt DateTime
+  createdAt DateTime   @default(now())
+
+  seats ShowSeat[]
+
+  @@index([status, expiresAt])
+  @@index([userId])
+}
+
+model Booking {
+  id          String        @id @default(cuid())
+  reference   String        @unique
+  showId      String
+  show        Show          @relation(fields: [showId], references: [id])
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status      BookingStatus @default(CONFIRMED)
+  totalAmount Decimal       @db.Decimal(10, 2)
+  qrToken     String
+  createdAt   DateTime      @default(now())
+  cancelledAt DateTime?
+
+  seats BookingSeat[]
+
+  @@index([userId])
+  @@index([showId])
+}
+
+model BookingSeat {
+  id             String   @id @default(cuid())
+  bookingId      String
+  booking        Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  showSeatId     String
+  showSeat       ShowSeat @relation(fields: [showSeatId], references: [id])
+  priceAtBooking Decimal  @db.Decimal(10, 2)
+
+  @@index([bookingId])
+  @@index([showSeatId])
+}
+
+// FIFO waitlist per show + seat category.
+model WaitlistEntry {
+  id             String         @id @default(cuid())
+  showId         String
+  show           Show           @relation(fields: [showId], references: [id], onDelete: Cascade)
+  seatCategoryId String
+  seatCategory   SeatCategory   @relation(fields: [seatCategoryId], references: [id])
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         WaitlistStatus @default(WAITING)
+  createdAt      DateTime       @default(now())
+
+  offers WaitlistOffer[]
+
+  @@index([showId, seatCategoryId, status, createdAt])
+  @@index([userId])
+}
+
+// A time-limited offer of a freed seat to the next waitlisted customer.
+model WaitlistOffer {
+  id              String        @id @default(cuid())
+  waitlistEntryId String
+  waitlistEntry   WaitlistEntry @relation(fields: [waitlistEntryId], references: [id], onDelete: Cascade)
+  showSeatId      String
+  showSeat        ShowSeat      @relation(fields: [showSeatId], references: [id])
+  offerToken      String        @unique
+  status          OfferStatus   @default(PENDING)
+  expiresAt       DateTime
+  createdAt       DateTime      @default(now())
+
+  @@index([status, expiresAt])
+  @@index([showSeatId])
+}
