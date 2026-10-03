@@ -2,12 +2,10 @@ import { Prisma } from '@prisma/client';
 import {
   prisma,
   offerToken,
-  bookingReference,
-  signTicketToken,
   runInTransaction,
+  inBookingTransaction,
+  createBooking,
   lockSeats,
-  quoteSeats,
-  minorToDecimal,
 } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict, gone } from '../../lib/errors';
@@ -16,7 +14,6 @@ import { waitlistOfferEmailHtml } from '../../lib/emailTemplates';
 import { emitSeatUpdate } from '../../realtime/io';
 import {
   SeatStatus,
-  BookingStatus,
   WaitlistStatus,
   OfferStatus,
   SocketEvents,
@@ -24,7 +21,7 @@ import {
   type WaitlistOfferDTO,
   type BookingDTO,
 } from '@ticket/shared';
-import { sendTicketEmail, getBookingDetail, withReferenceRetry } from '../bookings/bookings.shared';
+import { sendTicketEmail, getBookingDetail } from '../bookings/bookings.shared';
 
 const seatLabel = (rowLabel: string, colNumber: number) => `${rowLabel}${colNumber}`;
 
@@ -185,57 +182,42 @@ export async function getOffer(userId: string, token: string): Promise<WaitlistO
 
 /** Accept a time-limited offer → confirm a booking for the offered seat + email QR. */
 export async function acceptOffer(userId: string, token: string): Promise<BookingDTO> {
-  const { bookingId, showId, showSeatId } = await withReferenceRetry(() =>
-    runInTransaction(async (tx) => {
-      const offer = await tx.waitlistOffer.findUnique({
-        where: { offerToken: token },
-        include: { waitlistEntry: true },
-      });
-      if (!offer) throw notFound('Offer not found');
-      if (offer.waitlistEntry.userId !== userId) throw forbidden('This offer does not belong to you');
-      if (offer.status !== OfferStatus.PENDING) throw conflict('This offer is no longer available');
-      if (offer.expiresAt.getTime() <= Date.now()) throw gone('This offer has expired');
+  const { bookingId, showId, showSeatId } = await inBookingTransaction(async (tx) => {
+    const offer = await tx.waitlistOffer.findUnique({
+      where: { offerToken: token },
+      include: { waitlistEntry: true },
+    });
+    if (!offer) throw notFound('Offer not found');
+    if (offer.waitlistEntry.userId !== userId) throw forbidden('This offer does not belong to you');
+    if (offer.status !== OfferStatus.PENDING) throw conflict('This offer is no longer available');
+    if (offer.expiresAt.getTime() <= Date.now()) throw gone('This offer has expired');
 
-      // Lock the offered seat — guards against the sweeper expiring it concurrently.
-      const [seat] = await lockSeats(tx, [offer.showSeatId]);
-      if (!seat || seat.status !== SeatStatus.HELD) {
-        throw gone('The offered seat is no longer available');
-      }
+    // Lock the offered seat — guards against the sweeper expiring it concurrently.
+    const [seat] = await lockSeats(tx, [offer.showSeatId]);
+    if (!seat || seat.status !== SeatStatus.HELD) {
+      throw gone('The offered seat is no longer available');
+    }
 
-      const { totalMinor } = await quoteSeats(tx, offer.waitlistEntry.showId, [offer.showSeatId]);
-      const price = minorToDecimal(totalMinor);
-      const reference = bookingReference();
-      const booking = await tx.booking.create({
-        data: {
-          reference,
-          showId: offer.waitlistEntry.showId,
-          userId,
-          status: BookingStatus.CONFIRMED,
-          totalAmount: price,
-          qrToken: signTicketToken(reference),
-          seats: { create: [{ showSeatId: offer.showSeatId, priceAtBooking: price }] },
-        },
-      });
-      await tx.showSeat.update({
-        where: { id: offer.showSeatId },
-        data: { status: SeatStatus.BOOKED, holdId: null },
-      });
-      await tx.waitlistOffer.update({
-        where: { id: offer.id },
-        data: { status: OfferStatus.ACCEPTED },
-      });
-      await tx.waitlistEntry.update({
-        where: { id: offer.waitlistEntryId },
-        data: { status: WaitlistStatus.CONVERTED },
-      });
+    const booking = await createBooking(tx, {
+      userId,
+      showId: offer.waitlistEntry.showId,
+      seatIds: [offer.showSeatId],
+    });
+    await tx.waitlistOffer.update({
+      where: { id: offer.id },
+      data: { status: OfferStatus.ACCEPTED },
+    });
+    await tx.waitlistEntry.update({
+      where: { id: offer.waitlistEntryId },
+      data: { status: WaitlistStatus.CONVERTED },
+    });
 
-      return {
-        bookingId: booking.id,
-        showId: offer.waitlistEntry.showId,
-        showSeatId: offer.showSeatId,
-      };
-    }),
-  );
+    return {
+      bookingId: booking.bookingId,
+      showId: offer.waitlistEntry.showId,
+      showSeatId: offer.showSeatId,
+    };
+  });
 
   emitSeatUpdate(SocketEvents.SEAT_BOOKED, showId, [showSeatId], SeatStatus.BOOKED);
   await sendTicketEmail(bookingId);

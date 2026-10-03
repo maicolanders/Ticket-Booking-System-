@@ -90,21 +90,3 @@ export async function sendTicketEmail(bookingId: string): Promise<void> {
   });
 }
 
-/**
- * Retry a booking-creating transaction on the (rare) booking-reference unique
- * collision. The transaction rolls back fully on P2002, so a retry is safe.
- */
-export async function withReferenceRetry<T>(fn: () => Promise<T>, max = 3): Promise<T> {
-  let attempt = 0;
-  for (;;) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && attempt < max) {
-        attempt += 1;
-        continue;
-      }
-      throw e;
-    }
-  }
-}

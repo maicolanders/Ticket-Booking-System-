@@ -8,3 +8,4 @@ export { bookingReference, offerToken } from './ids';
 export * from './pricing/pricing';
 export * from './seats/seats';
 export * from './holds/holds';
+export * from './bookings/bookings';

@@ -1,22 +1,19 @@
 import {
   prisma,
-  bookingReference,
-  signTicketToken,
-  runInTransaction,
-  lockSeats,
   quoteSeats,
-  minorToDecimal,
+  isHoldActive,
+  convertHoldToBooking,
+  cancelBooking as cancelConfirmedBooking,
 } from '@ticket/domain';
-import { notFound, forbidden, conflict, gone } from '../../lib/errors';
+import { notFound, forbidden, conflict, gone, rethrowAsHttp } from '../../lib/errors';
 import { emitSeatUpdate } from '../../realtime/io';
-import { SeatStatus, HoldStatus, BookingStatus, SocketEvents, type BookingDTO } from '@ticket/shared';
+import { SeatStatus, HoldStatus, SocketEvents, type BookingDTO } from '@ticket/shared';
 import {
   bookingInclude,
   toBookingDTO,
   getBookingDetail,
   getBookingByReference,
   sendTicketEmail,
-  withReferenceRetry,
 } from './bookings.shared';
 import { offerSeatsToWaitlist } from '../waitlist/waitlist.service';
 import { randomUUID } from 'node:crypto';
@@ -24,62 +21,6 @@ import { chargePayment, refundPayment } from '../../lib/payments';
 import { logger } from '../../lib/logger';
 
 export { getBookingDetail, getBookingByReference };
-
-/**
- * Convert an active hold into a confirmed booking. Runs in a transaction that
- * re-locks the held seats FOR UPDATE, so it can't race the TTL sweeper or a
- * concurrent booking. Returns the ids needed for the post-commit side effects.
- */
-async function confirmBookingTxn(userId: string, holdId: string) {
-  return runInTransaction(async (tx) => {
-    const hold = await tx.hold.findUnique({
-      where: { id: holdId },
-      include: { seats: { select: { id: true } } },
-    });
-    if (!hold) throw notFound('Hold not found');
-    if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
-    if (hold.status !== HoldStatus.ACTIVE) throw conflict('This hold is no longer active');
-    if (hold.expiresAt.getTime() <= Date.now()) throw gone('Your seat hold has expired');
-
-    const seatIds = hold.seats.map((s) => s.id);
-    if (seatIds.length === 0) throw conflict('This hold has no seats');
-
-    // Pessimistic lock on the held seats — serializes against the sweeper.
-    const locked = await lockSeats(tx, seatIds);
-    const stillHeld =
-      locked.length === seatIds.length &&
-      locked.every((s) => s.status === SeatStatus.HELD && s.holdId === holdId);
-    if (!stillHeld) {
-      throw gone('Your held seats are no longer valid — the hold may have expired');
-    }
-
-    const quote = await quoteSeats(tx, hold.showId, seatIds);
-    const bookingSeats = quote.seats.map((s) => ({
-      showSeatId: s.showSeatId,
-      priceAtBooking: minorToDecimal(s.priceMinor),
-    }));
-
-    const reference = bookingReference();
-    const booking = await tx.booking.create({
-      data: {
-        reference,
-        showId: hold.showId,
-        userId,
-        status: BookingStatus.CONFIRMED,
-        totalAmount: minorToDecimal(quote.totalMinor),
-        qrToken: signTicketToken(reference),
-        seats: { create: bookingSeats },
-      },
-    });
-    await tx.showSeat.updateMany({
-      where: { id: { in: seatIds } },
-      data: { status: SeatStatus.BOOKED, holdId: null },
-    });
-    await tx.hold.update({ where: { id: holdId }, data: { status: HoldStatus.CONVERTED } });
-
-    return { bookingId: booking.id, showId: hold.showId, seatIds };
-  });
-}
 
 /** Confirm a booking from a hold, then emit + email the QR ticket. */
 export async function createBooking(
@@ -94,7 +35,7 @@ export async function createBooking(
   if (!hold) throw notFound('Hold not found');
   if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
   if (hold.status !== HoldStatus.ACTIVE) throw conflict('This hold is no longer active');
-  if (hold.expiresAt.getTime() <= Date.now()) throw gone('Your seat hold has expired');
+  if (!isHoldActive(hold)) throw gone('Your seat hold has expired');
 
   const { totalMinor } = await quoteSeats(
     prisma,
@@ -107,21 +48,17 @@ export async function createBooking(
     idempotencyKey,
   );
 
-  let result: Awaited<ReturnType<typeof confirmBookingTxn>>;
-  try {
-    result = await withReferenceRetry(() => confirmBookingTxn(userId, holdId));
-  } catch (error) {
+  const booking = await convertHoldToBooking(holdId).catch(async (error: unknown) => {
     try {
       await refundPayment(charge.id, `${idempotencyKey}:refund`);
     } catch (refundError) {
       logger.error('Failed to refund payment after booking failure:', refundError);
     }
-    throw error;
-  }
-  const { bookingId, showId, seatIds } = result;
-  emitSeatUpdate(SocketEvents.SEAT_BOOKED, showId, seatIds, SeatStatus.BOOKED);
-  await sendTicketEmail(bookingId);
-  return getBookingDetail(bookingId, userId);
+    return rethrowAsHttp(error);
+  });
+  emitSeatUpdate(SocketEvents.SEAT_BOOKED, booking.showId, booking.seatIds, SeatStatus.BOOKED);
+  await sendTicketEmail(booking.bookingId);
+  return getBookingDetail(booking.bookingId, userId);
 }
 
 /** A customer's booking history (summaries — no QR payload). */
@@ -140,35 +77,16 @@ export async function listBookings(userId: string): Promise<BookingDTO[]> {
  * the appropriate realtime updates per seat).
  */
 export async function cancelBooking(userId: string, bookingId: string): Promise<BookingDTO> {
-  const booking = await prisma.booking.findUnique({
-    where: { id: bookingId },
-    include: { seats: { select: { showSeatId: true } } },
-  });
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { userId: true } });
   if (!booking) throw notFound('Booking not found');
   if (booking.userId !== userId) throw forbidden('This booking does not belong to you');
-  if (booking.status !== BookingStatus.CONFIRMED) throw conflict('This booking is already cancelled');
 
-  const showSeatIds = booking.seats.map((s) => s.showSeatId);
-
-  await runInTransaction(async (tx) => {
-    if (showSeatIds.length > 0) {
-      // Lock so freeing the seats can't race a concurrent hold on them.
-      await lockSeats(tx, showSeatIds);
-      await tx.showSeat.updateMany({
-        where: { id: { in: showSeatIds } },
-        data: { status: SeatStatus.AVAILABLE, holdId: null },
-      });
-    }
-    await tx.booking.update({
-      where: { id: bookingId },
-      data: { status: BookingStatus.CANCELLED, cancelledAt: new Date() },
-    });
-  });
+  const { showId, seatIds } = await cancelConfirmedBooking(bookingId).catch(rethrowAsHttp);
 
   // Offer freed seats to waitlisted customers (per-seat FIFO). Emits realtime
   // SEAT_OFFERED for claimed seats and SEAT_RELEASED for the rest.
-  if (showSeatIds.length > 0) {
-    await offerSeatsToWaitlist(booking.showId, showSeatIds);
+  if (seatIds.length > 0) {
+    await offerSeatsToWaitlist(showId, seatIds);
   }
 
   return getBookingDetail(bookingId, userId);
