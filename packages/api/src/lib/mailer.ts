@@ -29,7 +29,7 @@ async function getEtherealTransport(): Promise<Transporter> {
       secure: false,
       auth: { user: testAccount.user, pass: testAccount.pass },
     });
-    logger.info('No RESEND_API_KEY set — using Ethereal dev email transport.');
+    logger.info('mail.transport.ethereal', { reason: 'RESEND_API_KEY and SMTP_URL are not set' });
   }
   return etherealTransport;
 }
@@ -50,7 +50,7 @@ export async function sendMail(input: MailInput): Promise<void> {
         attachments: input.attachments?.map((a) => ({ filename: a.filename, content: a.content })),
       });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
-      logger.info(`Email sent via Resend to ${input.to}: "${input.subject}"`);
+      logger.info('mail.sent', { transport: 'resend', to: input.to, subject: input.subject });
       return;
     }
 
@@ -63,13 +63,14 @@ export async function sendMail(input: MailInput): Promise<void> {
       attachments: input.attachments?.map((a) => ({ filename: a.filename, content: a.content })),
     });
     const preview = smtpTransport ? null : nodemailer.getTestMessageUrl(info);
-    logger.info(
-      preview
-        ? `Email (dev) to ${input.to}: "${input.subject}" — preview: ${preview}`
-        : `Email sent via SMTP to ${input.to}: "${input.subject}"`,
-    );
+    logger.info('mail.sent', {
+      transport: preview ? 'ethereal' : 'smtp',
+      to: input.to,
+      subject: input.subject,
+      ...(preview ? { preview } : {}),
+    });
   } catch (err) {
-    logger.error(`Failed to send email to ${input.to}:`, err);
+    logger.error('mail.failed', { to: input.to, subject: input.subject, err });
     // Swallow in dev so a mail outage never blocks booking confirmation.
     if (env.NODE_ENV === 'production') throw err;
   }

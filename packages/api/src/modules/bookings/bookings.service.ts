@@ -72,7 +72,7 @@ export async function createBooking(
       metadata: { holdId },
     })
     .catch((error: unknown) => {
-      logger.error('Payment provider call failed:', error);
+      logger.error('payment.charge.failed', { holdId, correlationId, err: error });
       throw error instanceof TransientPaymentError
         ? new HttpError(503, 'The payment provider is unavailable, please retry')
         : new HttpError(502, 'The payment provider rejected the request');
@@ -95,7 +95,12 @@ export async function createBooking(
         chargeId: outcome.chargeId,
       });
     } catch (refundError) {
-      logger.error('Failed to refund payment after booking failure:', refundError);
+      logger.error('payment.refund.failed', {
+        holdId,
+        correlationId,
+        chargeId: outcome.chargeId,
+        err: refundError,
+      });
     }
     return rethrowAsHttp(error);
   }

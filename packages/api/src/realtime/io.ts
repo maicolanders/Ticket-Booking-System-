@@ -20,7 +20,7 @@ export function initSocket(httpServer: HttpServer): Server {
     });
   });
 
-  logger.info('Socket.io initialized');
+  logger.info('realtime.initialized');
   return io;
 }
 

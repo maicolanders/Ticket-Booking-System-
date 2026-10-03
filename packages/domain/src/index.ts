@@ -11,3 +11,4 @@ export * from './holds/holds';
 export * from './bookings/bookings';
 export * from './payments/payments';
 export { SimulatorPaymentGateway, type SimulatorGatewayConfig } from './payments/simulatorGateway';
+export { logger, createLogger, type Logger, type LogFields } from './observability/logger';

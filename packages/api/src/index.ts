@@ -14,14 +14,14 @@ function main(): void {
   const stopSweeper = startSweeper();
 
   httpServer.listen(env.PORT, () => {
-    logger.info(`API listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
+    logger.info('api.listening', { url: `http://localhost:${env.PORT}`, env: env.NODE_ENV });
   });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.info(`Received ${signal}, shutting down gracefully...`);
+    logger.info('api.shutting_down', { signal });
     stopSweeper();
     httpServer.close();
     await prisma.$disconnect();
