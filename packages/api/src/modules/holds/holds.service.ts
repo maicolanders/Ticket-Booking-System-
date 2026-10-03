@@ -7,11 +7,14 @@ import {
   type ReleasedHold,
 } from '@ticket/domain';
 import { env } from '../../config/env';
-import { notFound, forbidden, rethrowAsHttp } from '../../lib/errors';
+import { notFound, forbidden, conflict, rethrowAsHttp } from '../../lib/errors';
 import { emitSeatUpdate } from '../../realtime/io';
 import { SeatStatus, HoldStatus, SocketEvents, type HoldDTO } from '@ticket/shared';
 
 // Thin adapter over the domain hold rules: authorisation, realtime fan-out, DTOs.
+
+/** A checkout hold is driven by its orchestration; cancel it through the Checkout API. */
+export const CHECKOUT_OWNED_HOLD = 'This hold belongs to a checkout; use the Checkout API';
 
 const announceReleased = (hold: ReleasedHold) =>
   emitSeatUpdate(SocketEvents.SEAT_RELEASED, hold.showId, hold.seatIds, SeatStatus.AVAILABLE);
@@ -33,9 +36,13 @@ export async function createHold(userId: string, showId: string, seatIds: string
 
 /** Release a hold early (checkout abandoned). Idempotent for non-active holds. */
 export async function releaseHold(userId: string, holdId: string): Promise<void> {
-  const hold = await prisma.hold.findUnique({ where: { id: holdId }, select: { userId: true } });
+  const hold = await prisma.hold.findUnique({
+    where: { id: holdId },
+    select: { userId: true, checkout: { select: { id: true } } },
+  });
   if (!hold) throw notFound('Hold not found');
   if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
+  if (hold.checkout) throw conflict(CHECKOUT_OWNED_HOLD);
 
   const released = await endHold(holdId, HoldStatus.RELEASED);
   if (released) announceReleased(released);

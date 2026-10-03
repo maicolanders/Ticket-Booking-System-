@@ -26,6 +26,7 @@ import {
   sendTicketEmail,
 } from './bookings.shared';
 import { offerSeatsToWaitlist } from '../waitlist/waitlist.service';
+import { CHECKOUT_OWNED_HOLD } from '../holds/holds.service';
 import { createHash } from 'node:crypto';
 import { paymentGateway } from '../../lib/payments';
 import { logger } from '../../lib/logger';
@@ -48,10 +49,11 @@ export async function createBooking(
 ): Promise<BookingDTO> {
   const hold = await prisma.hold.findUnique({
     where: { id: holdId },
-    include: { seats: { select: { id: true } } },
+    include: { seats: { select: { id: true } }, checkout: { select: { id: true } } },
   });
   if (!hold) throw notFound('Hold not found');
   if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
+  if (hold.checkout) throw conflict(CHECKOUT_OWNED_HOLD);
   if (hold.status !== HoldStatus.ACTIVE) throw conflict('This hold is no longer active');
   if (!isHoldActive(hold)) throw gone('Your seat hold has expired');
 
