@@ -26,6 +26,8 @@ export type SeatStatus = (typeof SeatStatus)[keyof typeof SeatStatus];
 
 export const HoldStatus = {
   ACTIVE: 'ACTIVE',
+  /** Payment in flight for a checkout: not expirable, not resellable. */
+  CAPTURING: 'CAPTURING',
   CONVERTED: 'CONVERTED',
   RELEASED: 'RELEASED',
   EXPIRED: 'EXPIRED',
@@ -53,6 +55,31 @@ export const OfferStatus = {
   EXPIRED: 'EXPIRED',
 } as const;
 export type OfferStatus = (typeof OfferStatus)[keyof typeof OfferStatus];
+
+/** Checkout API statuses (see CANDIDATE.md). */
+export const CheckoutStatus = {
+  PENDING: 'PENDING',
+  REJECTED: 'REJECTED',
+  AWAITING_PAYMENT: 'AWAITING_PAYMENT',
+  EXPIRED: 'EXPIRED',
+  CANCELLED: 'CANCELLED',
+  PROCESSING_PAYMENT: 'PROCESSING_PAYMENT',
+  CONFIRMED: 'CONFIRMED',
+  PAYMENT_DECLINED: 'PAYMENT_DECLINED',
+  REFUNDED: 'REFUNDED',
+  FAILED: 'FAILED',
+} as const;
+export type CheckoutStatus = (typeof CheckoutStatus)[keyof typeof CheckoutStatus];
+
+export const TERMINAL_CHECKOUT_STATUSES: readonly CheckoutStatus[] = [
+  CheckoutStatus.REJECTED,
+  CheckoutStatus.EXPIRED,
+  CheckoutStatus.CANCELLED,
+  CheckoutStatus.CONFIRMED,
+  CheckoutStatus.PAYMENT_DECLINED,
+  CheckoutStatus.REFUNDED,
+  CheckoutStatus.FAILED,
+];
 
 /* ============================================================================
  * Realtime (Socket.io) event names + payloads
@@ -159,6 +186,17 @@ export const createBookingSchema = z.object({
 });
 export type CreateBookingInput = z.infer<typeof createBookingSchema>;
 
+export const startCheckoutSchema = z.object({
+  showId: z.string().min(1),
+  seatIds: z.array(z.string().min(1)).min(1).max(10),
+});
+export type StartCheckoutInput = z.infer<typeof startCheckoutSchema>;
+
+export const submitPaymentSchema = z.object({
+  paymentToken: z.string().min(1),
+});
+export type SubmitPaymentInput = z.infer<typeof submitPaymentSchema>;
+
 export const joinWaitlistSchema = z.object({
   seatCategoryId: z.string().min(1),
 });
@@ -226,6 +264,19 @@ export interface HoldDTO {
   seatIds: string[];
   expiresAt: string;
   totalAmount: number;
+}
+
+/** GET /checkouts/{checkoutId}. Unused fields are null; amountDue is in minor units. */
+export interface CheckoutStatusDTO {
+  checkoutId: string;
+  correlationId: string;
+  status: CheckoutStatus;
+  seatIds: string[];
+  holdExpiresAt: string | null;
+  amountDue: number | null;
+  bookingReference: string | null;
+  failureReason: string | null;
+  updatedAt: string;
 }
 
 export interface BookingSeatDTO {

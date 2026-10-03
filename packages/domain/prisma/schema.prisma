@@ -29,9 +29,23 @@ enum SeatStatus {
 
 enum HoldStatus {
   ACTIVE
+  CAPTURING
   CONVERTED
   RELEASED
   EXPIRED
+}
+
+enum CheckoutStatus {
+  PENDING
+  REJECTED
+  AWAITING_PAYMENT
+  EXPIRED
+  CANCELLED
+  PROCESSING_PAYMENT
+  CONFIRMED
+  PAYMENT_DECLINED
+  REFUNDED
+  FAILED
 }
 
 enum BookingStatus {
@@ -65,6 +79,7 @@ model User {
   bookings        Booking[]
   holds           Hold[]
   waitlistEntries WaitlistEntry[]
+  checkouts       Checkout[]
 }
 
 model Venue {
@@ -144,6 +159,7 @@ model Show {
   holds           Hold[]
   bookings        Booking[]
   waitlistEntries WaitlistEntry[]
+  checkouts       Checkout[]
 
   @@index([eventId])
   @@index([venueId])
@@ -197,7 +213,8 @@ model Hold {
   expiresAt DateTime
   createdAt DateTime   @default(now())
 
-  seats ShowSeat[]
+  seats    ShowSeat[]
+  checkout Checkout?
 
   @@index([status, expiresAt])
   @@index([userId])
@@ -218,7 +235,8 @@ model Booking {
   createdAt   DateTime      @default(now())
   cancelledAt DateTime?
 
-  seats BookingSeat[]
+  seats    BookingSeat[]
+  checkout Checkout?
 
   @@index([userId])
   @@index([showId])
@@ -234,6 +252,36 @@ model BookingSeat {
 
   @@index([bookingId])
   @@index([showSeatId])
+}
+
+// One customer checkout driven by the Durable Functions orchestration whose
+// instance id equals this id. PostgreSQL is the system of record: the Checkout
+// API status is read from this row, never from orchestration state.
+model Checkout {
+  id                String         @id
+  correlationId     String         @unique
+  userId            String
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  showId            String
+  show              Show           @relation(fields: [showId], references: [id], onDelete: Cascade)
+  seatIds           String[]
+  status            CheckoutStatus @default(PENDING)
+  holdId            String?        @unique
+  hold              Hold?          @relation(fields: [holdId], references: [id])
+  holdExpiresAt     DateTime?
+  amountDue         Int?
+  currency          String         @default("USD")
+  chargeId          String?
+  bookingId         String?        @unique
+  booking           Booking?       @relation(fields: [bookingId], references: [id])
+  bookingReference  String?
+  failureReason     String?
+  cancelRequestedAt DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([status, updatedAt])
 }
 
 // FIFO waitlist per show + seat category.

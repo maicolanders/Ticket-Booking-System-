@@ -19,6 +19,13 @@ export interface ReleasedHold {
   seatIds: string[];
 }
 
+export interface PlaceHoldInput {
+  userId: string;
+  showId: string;
+  seatIds: string[];
+  ttlSeconds: number;
+}
+
 type HoldEnd = typeof HoldStatus.RELEASED | typeof HoldStatus.EXPIRED;
 
 /** A hold protects its seats only while ACTIVE and unexpired. */
@@ -27,7 +34,7 @@ export const isHoldActive = (hold: { status: string; expiresAt: Date }, now = ne
 
 /**
  * Inside the caller's transaction, expire ACTIVE holds that have lapsed and still
- * own some of `seatIds`. Correctness never depends on the sweeper's timing.
+ * own some of the locked seats. Correctness never depends on the sweeper's timing.
  */
 async function expireLapsedHolds(tx: Tx, holdIds: string[]): Promise<void> {
   if (holdIds.length === 0) return;
@@ -42,55 +49,84 @@ async function expireLapsedHolds(tx: Tx, holdIds: string[]): Promise<void> {
 }
 
 /**
- * Hold `seatIds` for `ttlSeconds`, all or nothing. Concurrent requests for the
- * same seat serialise on the row locks: the first commits HELD, the rest see
- * HELD and get a `conflict`.
+ * Hold seats for `ttlSeconds`, all or nothing, inside the caller's transaction.
+ * Concurrent requests for the same seat serialise on the row locks: the first
+ * commits HELD, the rest see HELD and get a `conflict`.
  */
-export async function placeHold(input: {
-  userId: string;
-  showId: string;
-  seatIds: string[];
-  ttlSeconds: number;
-}): Promise<PlacedHold> {
+export async function placeHoldTx(tx: Tx, input: PlaceHoldInput): Promise<PlacedHold> {
   const seatIds = [...new Set(input.seatIds)];
   if (seatIds.length === 0) throw new DomainError('invalid', 'Select at least one seat');
 
-  const show = await prisma.show.findUnique({ where: { id: input.showId }, select: { id: true } });
+  const show = await tx.show.findUnique({ where: { id: input.showId }, select: { id: true } });
   if (!show) throw new DomainError('not_found', 'Show not found');
 
-  const hold = await runInTransaction(async (tx) => {
-    const locked = await lockSeats(tx, seatIds);
-    if (locked.length !== seatIds.length) throw new DomainError('invalid', 'One or more seats do not exist');
-    if (locked.some((seat) => seat.showId !== input.showId)) {
-      throw new DomainError('invalid', 'Seats do not belong to this show');
-    }
+  const locked = await lockSeats(tx, seatIds);
+  if (locked.length !== seatIds.length) throw new DomainError('invalid', 'One or more seats do not exist');
+  if (locked.some((seat) => seat.showId !== input.showId)) {
+    throw new DomainError('invalid', 'Seats do not belong to this show');
+  }
 
-    const heldBy = locked.flatMap((seat) => (seat.status === SeatStatus.HELD && seat.holdId ? [seat.holdId] : []));
-    await expireLapsedHolds(tx, [...new Set(heldBy)]);
+  const heldBy = locked.flatMap((seat) => (seat.status === SeatStatus.HELD && seat.holdId ? [seat.holdId] : []));
+  await expireLapsedHolds(tx, [...new Set(heldBy)]);
 
-    const current = await tx.showSeat.findMany({
-      where: { id: { in: seatIds }, status: { not: SeatStatus.AVAILABLE } },
-      select: { id: true },
-    });
-    if (current.length > 0) {
-      throw new DomainError('conflict', 'Some of the selected seats are no longer available', {
-        seatIds: current.map((seat) => seat.id),
-      });
-    }
-
-    const created = await tx.hold.create({
-      data: {
-        showId: input.showId,
-        userId: input.userId,
-        expiresAt: new Date(Date.now() + input.ttlSeconds * 1000),
-      },
-    });
-    await holdSeats(tx, seatIds, created.id);
-    return created;
+  const unavailable = await tx.showSeat.findMany({
+    where: { id: { in: seatIds }, status: { not: SeatStatus.AVAILABLE } },
+    select: { id: true },
   });
+  if (unavailable.length > 0) {
+    throw new DomainError('conflict', 'Some of the selected seats are no longer available', {
+      seatIds: unavailable.map((seat) => seat.id),
+    });
+  }
 
-  const quote = await quoteSeats(prisma, input.showId, seatIds);
+  const hold = await tx.hold.create({
+    data: {
+      showId: input.showId,
+      userId: input.userId,
+      expiresAt: new Date(Date.now() + input.ttlSeconds * 1000),
+    },
+  });
+  await holdSeats(tx, seatIds, hold.id);
+  const quote = await quoteSeats(tx, input.showId, seatIds);
   return { holdId: hold.id, showId: input.showId, seatIds, expiresAt: hold.expiresAt, quote };
+}
+
+export const placeHold = (input: PlaceHoldInput): Promise<PlacedHold> =>
+  runInTransaction((tx) => placeHoldTx(tx, input));
+
+/**
+ * Inside the caller's transaction, end a hold that is in one of `from` and free
+ * its seats. Conditional, so exactly one caller wins; the rest get null.
+ * Locks seats before the hold row: the same order placeHoldTx uses.
+ */
+export async function endHoldTx(
+  tx: Tx,
+  holdId: string,
+  from: HoldStatus[],
+  to: HoldStatus,
+): Promise<ReleasedHold | null> {
+  const hold = await tx.hold.findUnique({
+    where: { id: holdId },
+    select: { showId: true, seats: { select: { id: true } } },
+  });
+  if (!hold) return null;
+
+  const locked = await lockSeats(
+    tx,
+    hold.seats.map((seat) => seat.id),
+  );
+  const { count } = await tx.hold.updateMany({
+    where: { id: holdId, status: { in: from } },
+    data: { status: to },
+  });
+  if (count === 0) return null;
+
+  await releaseHeldSeats(tx, holdId);
+  return {
+    holdId,
+    showId: hold.showId,
+    seatIds: locked.filter((seat) => seat.holdId === holdId).map((seat) => seat.id),
+  };
 }
 
 /**
@@ -98,38 +134,22 @@ export async function placeHold(input: {
  * caller that flips the hold out of ACTIVE releases the seats; everyone else
  * (a repeat call, the sweeper, a hold already converted to a booking) gets null.
  */
-export function releaseHold(holdId: string, outcome: HoldEnd): Promise<ReleasedHold | null> {
-  return runInTransaction(async (tx) => {
-    const hold = await tx.hold.findUnique({
-      where: { id: holdId },
-      select: { showId: true, seats: { select: { id: true } } },
-    });
-    if (!hold) return null;
+export const releaseHold = (holdId: string, outcome: HoldEnd): Promise<ReleasedHold | null> =>
+  runInTransaction((tx) => endHoldTx(tx, holdId, [HoldStatus.ACTIVE], outcome));
 
-    // Seats before the hold row: the same order placeHold uses, so the two never deadlock.
-    const locked = await lockSeats(
-      tx,
-      hold.seats.map((seat) => seat.id),
-    );
-    const { count } = await tx.hold.updateMany({
-      where: { id: holdId, status: HoldStatus.ACTIVE },
-      data: { status: outcome },
-    });
-    if (count === 0) return null;
-
-    await releaseHeldSeats(tx, holdId);
-    return {
-      holdId,
-      showId: hold.showId,
-      seatIds: locked.filter((seat) => seat.holdId === holdId).map((seat) => seat.id),
-    };
-  });
-}
-
-/** Expire every lapsed ACTIVE hold, optionally for one show. Returns the holds released. */
+/**
+ * Expire every lapsed ACTIVE hold that no checkout owns, optionally for one show.
+ * A checkout hold's lifetime belongs to its orchestration (durable timer); the
+ * checkout recovery job is the backstop for those.
+ */
 export async function releaseExpiredHolds(showId?: string): Promise<ReleasedHold[]> {
   const lapsed = await prisma.hold.findMany({
-    where: { status: HoldStatus.ACTIVE, expiresAt: { lte: new Date() }, ...(showId ? { showId } : {}) },
+    where: {
+      status: HoldStatus.ACTIVE,
+      expiresAt: { lte: new Date() },
+      checkout: null,
+      ...(showId ? { showId } : {}),
+    },
     select: { id: true },
   });
   const released: ReleasedHold[] = [];
