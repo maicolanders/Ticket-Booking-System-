@@ -9,3 +9,5 @@ export * from './pricing/pricing';
 export * from './seats/seats';
 export * from './holds/holds';
 export * from './bookings/bookings';
+export * from './payments/payments';
+export { SimulatorPaymentGateway, type SimulatorGatewayConfig } from './payments/simulatorGateway';
