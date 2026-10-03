@@ -1,6 +1,7 @@
+import { Prisma } from '@prisma/client';
 import { HoldStatus, SeatStatus } from '@ticket/shared';
 import { prisma } from '../db/client';
-import { runInTransaction, type Tx } from '../db/transaction';
+import { dbNow, runInTransaction, type Tx } from '../db/transaction';
 import { DomainError } from '../errors';
 import { quoteSeats, type SeatQuote } from '../pricing/pricing';
 import { holdSeats, lockSeats, releaseHeldSeats } from '../seats/seats';
@@ -28,7 +29,10 @@ export interface PlaceHoldInput {
 
 type HoldEnd = typeof HoldStatus.RELEASED | typeof HoldStatus.EXPIRED;
 
-/** A hold protects its seats only while ACTIVE and unexpired. */
+/**
+ * A hold protects its seats only while ACTIVE and unexpired. Authoritative checks
+ * pass the database clock (dbNow); the app clock default only suits early fail-fast checks.
+ */
 export const isHoldActive = (hold: { status: string; expiresAt: Date }, now = new Date()): boolean =>
   hold.status === HoldStatus.ACTIVE && hold.expiresAt.getTime() > now.getTime();
 
@@ -36,10 +40,10 @@ export const isHoldActive = (hold: { status: string; expiresAt: Date }, now = ne
  * Inside the caller's transaction, expire ACTIVE holds that have lapsed and still
  * own some of the locked seats. Correctness never depends on the sweeper's timing.
  */
-async function expireLapsedHolds(tx: Tx, holdIds: string[]): Promise<void> {
+async function expireLapsedHolds(tx: Tx, holdIds: string[], now: Date): Promise<void> {
   if (holdIds.length === 0) return;
   const lapsed = await tx.hold.findMany({
-    where: { id: { in: holdIds }, status: HoldStatus.ACTIVE, expiresAt: { lte: new Date() } },
+    where: { id: { in: holdIds }, status: HoldStatus.ACTIVE, expiresAt: { lte: now } },
     select: { id: true },
   });
   for (const { id } of lapsed) {
@@ -66,8 +70,9 @@ export async function placeHoldTx(tx: Tx, input: PlaceHoldInput): Promise<Placed
     throw new DomainError('invalid', 'Seats do not belong to this show');
   }
 
+  const now = await dbNow(tx);
   const heldBy = locked.flatMap((seat) => (seat.status === SeatStatus.HELD && seat.holdId ? [seat.holdId] : []));
-  await expireLapsedHolds(tx, [...new Set(heldBy)]);
+  await expireLapsedHolds(tx, [...new Set(heldBy)], now);
 
   const unavailable = await tx.showSeat.findMany({
     where: { id: { in: seatIds }, status: { not: SeatStatus.AVAILABLE } },
@@ -83,7 +88,7 @@ export async function placeHoldTx(tx: Tx, input: PlaceHoldInput): Promise<Placed
     data: {
       showId: input.showId,
       userId: input.userId,
-      expiresAt: new Date(Date.now() + input.ttlSeconds * 1000),
+      expiresAt: new Date(now.getTime() + input.ttlSeconds * 1000),
     },
   });
   await holdSeats(tx, seatIds, hold.id);
@@ -143,15 +148,11 @@ export const releaseHold = (holdId: string, outcome: HoldEnd): Promise<ReleasedH
  * checkout recovery job is the backstop for those.
  */
 export async function releaseExpiredHolds(showId?: string): Promise<ReleasedHold[]> {
-  const lapsed = await prisma.hold.findMany({
-    where: {
-      status: HoldStatus.ACTIVE,
-      expiresAt: { lte: new Date() },
-      checkout: null,
-      ...(showId ? { showId } : {}),
-    },
-    select: { id: true },
-  });
+  const lapsed = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT h."id" FROM "Hold" h
+    WHERE h."status" = 'ACTIVE' AND h."expiresAt" <= now()
+      AND NOT EXISTS (SELECT 1 FROM "Checkout" c WHERE c."holdId" = h."id")
+      ${showId ? Prisma.sql`AND h."showId" = ${showId}` : Prisma.empty}`;
   const released: ReleasedHold[] = [];
   for (const { id } of lapsed) {
     const result = await releaseHold(id, HoldStatus.EXPIRED);

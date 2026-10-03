@@ -8,7 +8,7 @@ import {
 } from '@ticket/shared';
 import { createBooking, inBookingTransaction } from '../bookings/bookings';
 import { prisma } from '../db/client';
-import { runInTransaction, type Tx } from '../db/transaction';
+import { dbNow, runInTransaction, type Tx } from '../db/transaction';
 import { DomainError } from '../errors';
 import { endHoldTx, isHoldActive, placeHoldTx } from '../holds/holds';
 import { lockSeats } from '../seats/seats';
@@ -141,7 +141,7 @@ export function holdCheckoutSeats(checkoutId: string, ttlSeconds: number): Promi
 export type BeginPaymentOutcome = 'processing' | 'expired' | 'not_payable';
 
 /**
- * AWAITING_PAYMENT → PROCESSING_PAYMENT, judged by the database clock. The hold
+ * AWAITING_PAYMENT → PROCESSING_PAYMENT, with expiry judged by the database clock. The hold
  * moves ACTIVE → CAPTURING, so neither the sweeper nor a lazy expiry can free the
  * seats while money is in flight. A lapsed hold ends the checkout as EXPIRED.
  */
@@ -156,7 +156,7 @@ export function beginCheckoutPayment(
     }
 
     const { hold } = await lockHold(tx, checkout.holdId);
-    if (isHoldActive(hold)) {
+    if (isHoldActive(hold, await dbNow(tx))) {
       await tx.hold.update({ where: { id: hold.id }, data: { status: HoldStatus.CAPTURING } });
       return { checkout: await transition(tx, checkout, CheckoutStatus.PROCESSING_PAYMENT), outcome: 'processing' };
     }

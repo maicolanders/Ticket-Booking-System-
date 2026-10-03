@@ -62,3 +62,12 @@ export async function runInTransaction<T>(
     }
   }
 }
+
+/**
+ * The database's clock, as of the current transaction. Every expiry decision uses
+ * it, so the API and the Functions app agree on "expired" whatever their clock skew.
+ */
+export async function dbNow(tx: Tx): Promise<Date> {
+  const [row] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT now() AS now`;
+  return row.now;
+}

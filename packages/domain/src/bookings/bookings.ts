@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { BookingStatus, HoldStatus, SeatStatus } from '@ticket/shared';
 import { signTicketToken } from '../auth/tokens';
-import { runInTransaction, type Tx } from '../db/transaction';
+import { dbNow, runInTransaction, type Tx } from '../db/transaction';
 import { DomainError } from '../errors';
 import { isHoldActive } from '../holds/holds';
 import { bookingReference } from '../ids';
@@ -99,7 +99,7 @@ export function convertHoldToBooking(
     });
     if (current.status !== HoldStatus.ACTIVE)
       throw new DomainError('conflict', 'This hold is no longer active');
-    if (!isHoldActive(current)) throw new DomainError('expired', 'Your seat hold has expired');
+    if (!isHoldActive(current, await dbNow(tx))) throw new DomainError('expired', 'Your seat hold has expired');
     if (seatIds.length === 0) throw new DomainError('conflict', 'This hold has no seats');
 
     const stillHeld =
