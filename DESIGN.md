@@ -10,8 +10,8 @@ described in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md); operating procedures are in
 
 ```mermaid
 flowchart LR
-  SPA[React SPA] -->|REST + Socket.io| API
-  Client[Checkout client] -->|POST/GET /api/checkouts| HTTP
+  SPA[React SPA] -->|browse, bookings: REST + Socket.io| API
+  SPA -->|checkout: POST/GET /api/checkouts| HTTP
 
   subgraph Functions["@ticket/functions (Azure Functions, Node v4)"]
     HTTP[HTTP starters] -->|startNew / raiseEvent| ORCH[checkoutOrchestrator]
@@ -92,9 +92,9 @@ stateDiagram-v2
 
 | Legacy piece | Decision | Justification |
 |---|---|---|
-| `POST /api/shows/:id/holds` | **Kept**, adapter over `placeHold` | Used by the SPA's seat map and the existing tests; the rules are now shared. |
+| `POST /api/shows/:id/holds` | **Kept**, adapter over `placeHold` | The existing tests and older clients use it; the rules are now shared. The SPA checks out through the Checkout API. |
 | `DELETE /api/holds/:id` | **Kept**, adapter over `releaseHold`; **409 on checkout-owned holds** | Releasing a checkout's hold would free seats the orchestration still tracks. |
-| `POST /api/bookings` | **Kept (deprecated path)**, adapter over the domain; **409 on checkout-owned holds** | The SPA and the existing waitlist tests use it. Fixed: random idempotency key → deterministic per (hold, card); a replay returns the booking its payment bought instead of refunding a charge in use; decline is now 402 (was 500). New clients should use the Checkout API. |
+| `POST /api/bookings` | **Kept (deprecated path)**, adapter over the domain; **409 on checkout-owned holds** | The existing waitlist tests and older clients use it. Fixed: random idempotency key → deterministic per (hold, card); a replay returns the booking its payment bought instead of refunding a charge in use; decline is now 402 (was 500). New clients should use the Checkout API. |
 | `POST /api/bookings/:id/cancel` | **Kept**, over `cancelBooking` | Booking cancellation is outside checkout; it shares the seat transition and feeds the waitlist. |
 | `POST /api/waitlist/offers/:token/accept` | **Kept**, over `createBooking` | Removes the duplicated booking creation. |
 | Sweeper: expired holds | **Kept, narrowed** to holds no checkout owns, selected by the database clock | A checkout hold's lifetime belongs to its durable timer. A competing sweeper would be a second owner of the same expiry. |
@@ -220,17 +220,17 @@ Retry layers are not multiplied: the HTTP adapter makes one attempt, the activit
 
 ## More time
 
-- **Bonus items:** update the SPA to the Checkout API; orchestrate the waitlist offer flow (its sweeper is the last legacy timer); deploy to Azure (Flex Consumption + a DTS resource + PostgreSQL Flexible Server, Bicep, managed identity for DTS); OpenTelemetry / Application Insights with W3C `traceparent` (the simulator already records it).
+- **Bonus items:** orchestrate the waitlist offer flow (its sweeper is the last legacy timer); deploy to Azure (Flex Consumption + a DTS resource + PostgreSQL Flexible Server, Bicep, managed identity for DTS); OpenTelemetry / Application Insights with W3C `traceparent` (the simulator already records it).
 - An operator endpoint or CLI to reconcile FAILED checkouts against the provider ledger by idempotency key.
 - Exactly-once ticket email via an outbox plus a deterministic `Message-ID`, instead of at-least-once.
 - Alerting on FAILED counts and on checkouts stuck past a threshold; a metrics dashboard.
 - A separate test database (tests currently share the dev database), CI running every test level, and dependency upgrades (`npm audit`).
 - Replace the `tok_*` payment token in the orchestration history with a vaulted reference.
-- Push realtime seat updates from checkout transitions to the SPA (the Functions app has no Socket.io; the seat map refreshes on load).
+- Push realtime seat updates from checkout transitions to other open seat maps (the Functions app has no Socket.io; other viewers see the change on their next seat-map load).
 
 ## Deviations
 
-- **Legacy checkout endpoints are kept, not delegated.** `POST /shows/:id/holds` and `POST /bookings` remain as adapters over the shared domain, guarded against checkout-owned holds, because the SPA and the existing tests depend on them. The new flow is the Checkout API.
+- **Legacy checkout endpoints are kept, not delegated.** `POST /shows/:id/holds` and `POST /bookings` remain as adapters over the shared domain, guarded against checkout-owned holds, because the existing tests and older clients depend on them. The SPA and new clients use the Checkout API.
 - **Cancel after the booking is committed returns 409.** The contract reserves 409 for terminal checkouts; a checkout whose booking already exists is treated as effectively terminal, so "CANCELLED ⇒ zero net charge" holds without cancelling bookings.
 - **Ticket email is at-least-once**, not exactly-once (crash window between send and record).
 - **No Durable Entities or critical sections:** PostgreSQL row locks are the single mutual-exclusion mechanism (see Orchestration design).
