@@ -1,5 +1,5 @@
 import type { RequestHandler } from 'express';
-import { verifyAuthToken } from '../lib/jwt';
+import { verifyAuthToken } from '@ticket/domain';
 import { unauthorized, forbidden } from '../lib/errors';
 import type { Role } from '@ticket/shared';
 

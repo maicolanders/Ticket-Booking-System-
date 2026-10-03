@@ -1,8 +1,6 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '@ticket/domain';
+import { prisma, bookingReference, signTicketToken } from '@ticket/domain';
 import { notFound, forbidden, conflict, gone } from '../../lib/errors';
-import { bookingReference } from '../../lib/ids';
-import { signTicketToken } from '../../lib/jwt';
 import { emitSeatUpdate } from '../../realtime/io';
 import { SeatStatus, HoldStatus, BookingStatus, SocketEvents, type BookingDTO } from '@ticket/shared';
 import {

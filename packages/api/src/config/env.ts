@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import { z } from 'zod';
+import { DEFAULT_JWT_SECRET } from '@ticket/domain';
 
 const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   PORT: z.coerce.number().default(4000),
-  JWT_SECRET: z.string().min(1).default('dev-secret-change-me'),
+  JWT_SECRET: z.string().min(1).default(DEFAULT_JWT_SECRET),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   APP_BASE_URL: z.string().default('http://localhost:5173'),
   HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(600),
@@ -33,7 +34,7 @@ export const corsOrigins = env.CORS_ORIGIN.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
-if (isProd && env.JWT_SECRET === 'dev-secret-change-me') {
+if (isProd && env.JWT_SECRET === DEFAULT_JWT_SECRET) {
   // eslint-disable-next-line no-console
   console.warn('[WARN] JWT_SECRET is using the insecure default in production. Set a strong secret.');
 }

@@ -1,6 +1,6 @@
 import { prisma } from '@ticket/domain';
 import { notFound, forbidden } from '../../lib/errors';
-import { verifyTicketToken } from '../../lib/jwt';
+import { verifyTicketToken } from '@ticket/domain';
 import { generateQrDataUrl } from '../../lib/qr';
 import { BookingStatus, type TicketVerifyDTO } from '@ticket/shared';
 

@@ -1,8 +1,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { PrismaClient, Prisma } from '@prisma/client';
-import { bookingReference } from '../src/lib/ids';
-import { signTicketToken } from '../src/lib/jwt';
+import { bookingReference, signTicketToken } from '@ticket/domain';
 
 const prisma = new PrismaClient();
 

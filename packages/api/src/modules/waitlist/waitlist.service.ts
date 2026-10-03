@@ -1,9 +1,7 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '@ticket/domain';
+import { prisma, offerToken, bookingReference, signTicketToken } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict, gone } from '../../lib/errors';
-import { offerToken, bookingReference } from '../../lib/ids';
-import { signTicketToken } from '../../lib/jwt';
 import { sendMail } from '../../lib/mailer';
 import { waitlistOfferEmailHtml } from '../../lib/emailTemplates';
 import { emitSeatUpdate } from '../../realtime/io';

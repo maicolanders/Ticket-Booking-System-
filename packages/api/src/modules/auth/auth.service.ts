@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import type { User } from '@prisma/client';
 import { prisma } from '@ticket/domain';
-import { signAuthToken } from '../../lib/jwt';
+import { signAuthToken } from '@ticket/domain';
 import { badRequest, unauthorized } from '../../lib/errors';
 import type { RegisterInput, LoginInput, AuthResponseDTO } from '@ticket/shared';
 

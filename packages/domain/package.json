@@ -18,9 +18,11 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "@ticket/shared": "*",
+    "jsonwebtoken": "^9.0.2",
     "prisma": "^5.22.0"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   }
