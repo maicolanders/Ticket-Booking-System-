@@ -1,5 +1,5 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
-import { HttpError } from '../lib/errors';
+import { HttpError, toHttpError } from '../lib/errors';
 import { logger } from '../lib/logger';
 
 export const notFoundHandler: RequestHandler = (_req, res) => {
@@ -7,7 +7,8 @@ export const notFoundHandler: RequestHandler = (_req, res) => {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
+export const errorHandler: ErrorRequestHandler = (thrown, _req, res, _next) => {
+  const err = toHttpError(thrown);
   if (err instanceof HttpError) {
     res.status(err.status).json({ error: err.message, details: err.details });
     return;
