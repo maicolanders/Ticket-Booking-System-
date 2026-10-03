@@ -5,6 +5,8 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_SECRET: z.string().min(1),
   HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  /** How long past its hold expiry an AWAITING_PAYMENT checkout may linger before recovery expires it. */
+  CHECKOUT_RECOVERY_GRACE_SECONDS: z.coerce.number().int().positive().default(120),
   PAYMENT_API_URL: z.string().url(),
   PAYMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   SMTP_URL: z.string().optional().default(''),

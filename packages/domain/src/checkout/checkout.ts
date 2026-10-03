@@ -276,3 +276,22 @@ export function requestCheckoutCancel(checkoutId: string, userId: string): Promi
     return 'accepted';
   });
 }
+
+/**
+ * Backstop for lost orchestrations (e.g. the in-memory DTS emulator restarted):
+ * expire AWAITING_PAYMENT checkouts whose hold lapsed more than `graceSeconds`
+ * ago. Safe alongside a live orchestration: releaseCheckout is conditional and
+ * idempotent, and payment re-checks expiry by the database clock. Checkouts with
+ * money in flight (PROCESSING_PAYMENT) are never touched; they are for an operator.
+ */
+export async function expireAbandonedCheckouts(graceSeconds: number): Promise<Checkout[]> {
+  const abandoned = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT "id" FROM "Checkout"
+    WHERE "status" = 'AWAITING_PAYMENT'
+      AND "holdExpiresAt" < now() - ${graceSeconds} * interval '1 second'`;
+  const expired: Checkout[] = [];
+  for (const { id } of abandoned) {
+    expired.push(await releaseCheckout(id, CheckoutStatus.EXPIRED));
+  }
+  return expired;
+}

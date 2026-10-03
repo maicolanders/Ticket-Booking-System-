@@ -8,6 +8,7 @@
     "DATABASE_URL": "postgresql://ticket:ticket@localhost:5433/ticketing?schema=public",
     "JWT_SECRET": "change-me-to-a-long-random-secret",
     "HOLD_TTL_SECONDS": "600",
+    "CHECKOUT_RECOVERY_GRACE_SECONDS": "120",
     "PAYMENT_API_URL": "http://localhost:4100",
     "PAYMENT_TIMEOUT_MS": "10000",
     "SMTP_URL": "smtp://localhost:1025",

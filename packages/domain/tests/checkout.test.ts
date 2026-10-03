@@ -7,6 +7,7 @@ import {
   completeCheckout,
   confirmCheckoutBooking,
   createCheckout,
+  expireAbandonedCheckouts,
   failCheckout,
   holdCheckoutSeats,
   releaseCheckout,
@@ -175,5 +176,36 @@ describe('failing with no money moved', () => {
     await failCheckout(checkoutId, 'payment rejected: validation_error', { releaseSeats: true });
 
     expect(await seats(seatIds)).toEqual([SeatStatus.AVAILABLE]);
+  });
+});
+
+describe('expireAbandonedCheckouts', () => {
+  const ageHold = (holdId: string, checkoutId: string, secondsAgo: number) => {
+    const at = new Date(Date.now() - secondsAgo * 1000);
+    return Promise.all([
+      prisma.hold.update({ where: { id: holdId }, data: { expiresAt: at } }),
+      prisma.checkout.update({ where: { id: checkoutId }, data: { holdExpiresAt: at } }),
+    ]);
+  };
+
+  it('expires checkouts left awaiting payment past the grace period, and nothing else', async () => {
+    const abandoned = await newCheckout({ seats: 1 });
+    const recent = await newCheckout({ seats: 1 });
+    const paying = await newCheckout({ seats: 1 });
+    for (const c of [abandoned, recent, paying]) await holdCheckoutSeats(c.checkoutId, TTL);
+    await beginCheckoutPayment(paying.checkoutId);
+    const holdOf = async (id: string) => (await prisma.checkout.findUniqueOrThrow({ where: { id } })).holdId!;
+    await ageHold(await holdOf(abandoned.checkoutId), abandoned.checkoutId, 600);
+    await ageHold(await holdOf(recent.checkoutId), recent.checkoutId, 5);
+    await ageHold(await holdOf(paying.checkoutId), paying.checkoutId, 600);
+
+    const expired = await expireAbandonedCheckouts(120);
+
+    expect(expired.map((c) => c.id)).toContain(abandoned.checkoutId);
+    expect(expired.map((c) => c.id)).not.toContain(recent.checkoutId);
+    expect(await seats(abandoned.seatIds)).toEqual([SeatStatus.AVAILABLE]);
+    const statusOf = async (id: string) => (await prisma.checkout.findUniqueOrThrow({ where: { id } })).status;
+    expect(await statusOf(recent.checkoutId)).toBe(CheckoutStatus.AWAITING_PAYMENT);
+    expect(await statusOf(paying.checkoutId)).toBe(CheckoutStatus.PROCESSING_PAYMENT);
   });
 });
