@@ -27,6 +27,7 @@
     "test:unit": "npm run test -w @ticket/functions",
     "test:sim": "npm run test -w @ticket/payment-sim",
     "test:acceptance": "npm run test -w @ticket/acceptance",
+    "test:restart": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/restart-drill.ts",
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down",
     "infra:reset": "docker compose down -v",
