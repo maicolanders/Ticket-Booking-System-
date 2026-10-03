@@ -28,8 +28,8 @@ credentials.json
 service-account*.json
 
 # Prisma
-packages/api/prisma/*.db
-packages/api/prisma/*.db-journal
+packages/domain/prisma/*.db
+packages/domain/prisma/*.db-journal
 
 # Logs
 *.log
