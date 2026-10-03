@@ -6,6 +6,8 @@ import {
   signTicketToken,
   runInTransaction,
   lockSeats,
+  quoteSeats,
+  minorToDecimal,
 } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict, gone } from '../../lib/errors';
@@ -22,7 +24,7 @@ import {
   type WaitlistOfferDTO,
   type BookingDTO,
 } from '@ticket/shared';
-import { priceMap, sendTicketEmail, getBookingDetail, withReferenceRetry } from '../bookings/bookings.shared';
+import { sendTicketEmail, getBookingDetail, withReferenceRetry } from '../bookings/bookings.shared';
 
 const seatLabel = (rowLabel: string, colNumber: number) => `${rowLabel}${colNumber}`;
 
@@ -200,8 +202,8 @@ export async function acceptOffer(userId: string, token: string): Promise<Bookin
         throw gone('The offered seat is no longer available');
       }
 
-      const prices = await priceMap(tx, offer.waitlistEntry.showId);
-      const price = prices.get(seat.seatCategoryId) ?? 0;
+      const { totalMinor } = await quoteSeats(tx, offer.waitlistEntry.showId, [offer.showSeatId]);
+      const price = minorToDecimal(totalMinor);
       const reference = bookingReference();
       const booking = await tx.booking.create({
         data: {

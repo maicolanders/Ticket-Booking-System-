@@ -1,4 +1,12 @@
-import { prisma, bookingReference, signTicketToken, runInTransaction, lockSeats } from '@ticket/domain';
+import {
+  prisma,
+  bookingReference,
+  signTicketToken,
+  runInTransaction,
+  lockSeats,
+  quoteSeats,
+  minorToDecimal,
+} from '@ticket/domain';
 import { notFound, forbidden, conflict, gone } from '../../lib/errors';
 import { emitSeatUpdate } from '../../realtime/io';
 import { SeatStatus, HoldStatus, BookingStatus, SocketEvents, type BookingDTO } from '@ticket/shared';
@@ -8,14 +16,12 @@ import {
   getBookingDetail,
   getBookingByReference,
   sendTicketEmail,
-  priceMap,
   withReferenceRetry,
 } from './bookings.shared';
 import { offerSeatsToWaitlist } from '../waitlist/waitlist.service';
 import { randomUUID } from 'node:crypto';
 import { chargePayment, refundPayment } from '../../lib/payments';
 import { logger } from '../../lib/logger';
-import { toMoney } from '../../lib/money';
 
 export { getBookingDetail, getBookingByReference };
 
@@ -47,16 +53,11 @@ async function confirmBookingTxn(userId: string, holdId: string) {
       throw gone('Your held seats are no longer valid — the hold may have expired');
     }
 
-    const prices = await priceMap(tx, hold.showId);
-    const seatRows = await tx.showSeat.findMany({
-      where: { id: { in: seatIds } },
-      select: { id: true, seatCategoryId: true },
-    });
-    const bookingSeats = seatRows.map((s) => ({
-      showSeatId: s.id,
-      priceAtBooking: prices.get(s.seatCategoryId) ?? 0,
+    const quote = await quoteSeats(tx, hold.showId, seatIds);
+    const bookingSeats = quote.seats.map((s) => ({
+      showSeatId: s.showSeatId,
+      priceAtBooking: minorToDecimal(s.priceMinor),
     }));
-    const total = bookingSeats.reduce((sum, b) => sum + b.priceAtBooking, 0);
 
     const reference = bookingReference();
     const booking = await tx.booking.create({
@@ -65,7 +66,7 @@ async function confirmBookingTxn(userId: string, holdId: string) {
         showId: hold.showId,
         userId,
         status: BookingStatus.CONFIRMED,
-        totalAmount: total,
+        totalAmount: minorToDecimal(quote.totalMinor),
         qrToken: signTicketToken(reference),
         seats: { create: bookingSeats },
       },
@@ -88,19 +89,21 @@ export async function createBooking(
 ): Promise<BookingDTO> {
   const hold = await prisma.hold.findUnique({
     where: { id: holdId },
-    include: { seats: { select: { seatCategoryId: true } } },
+    include: { seats: { select: { id: true } } },
   });
   if (!hold) throw notFound('Hold not found');
   if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
   if (hold.status !== HoldStatus.ACTIVE) throw conflict('This hold is no longer active');
   if (hold.expiresAt.getTime() <= Date.now()) throw gone('Your seat hold has expired');
 
-  const pricing = await prisma.showPricing.findMany({ where: { showId: hold.showId } });
-  const prices = new Map(pricing.map((price) => [price.seatCategoryId, toMoney(price.price)]));
-  const amount = hold.seats.reduce((sum, seat) => sum + (prices.get(seat.seatCategoryId) ?? 0), 0);
+  const { totalMinor } = await quoteSeats(
+    prisma,
+    hold.showId,
+    hold.seats.map((seat) => seat.id),
+  );
   const idempotencyKey = randomUUID();
   const charge = await chargePayment(
-    { amount: Math.round(amount * 100), currency: 'USD', paymentToken, metadata: { holdId } },
+    { amount: totalMinor, currency: 'USD', paymentToken, metadata: { holdId } },
     idempotencyKey,
   );
 

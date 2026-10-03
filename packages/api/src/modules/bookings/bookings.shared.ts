@@ -90,15 +90,6 @@ export async function sendTicketEmail(bookingId: string): Promise<void> {
   });
 }
 
-/** Map a show's per-category prices for quick lookup. */
-export async function priceMap(
-  tx: Prisma.TransactionClient,
-  showId: string,
-): Promise<Map<string, number>> {
-  const pricing = await tx.showPricing.findMany({ where: { showId } });
-  return new Map(pricing.map((p) => [p.seatCategoryId, toMoney(p.price)]));
-}
-
 /**
  * Retry a booking-creating transaction on the (rare) booking-reference unique
  * collision. The transaction rolls back fully on P2002, so a retry is safe.

@@ -1,19 +1,8 @@
-import { prisma, runInTransaction, lockSeats } from '@ticket/domain';
+import { prisma, runInTransaction, lockSeats, quoteSeats, minorToMajor } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict } from '../../lib/errors';
-import { toMoney } from '../../lib/money';
 import { emitSeatUpdate } from '../../realtime/io';
 import { SeatStatus, HoldStatus, SocketEvents, type HoldDTO } from '@ticket/shared';
-
-/** Sum the price of a set of seats for a show, using per-category show pricing. */
-async function computeSeatTotal(showId: string, seatIds: string[]): Promise<number> {
-  const [seats, pricing] = await Promise.all([
-    prisma.showSeat.findMany({ where: { id: { in: seatIds } }, select: { seatCategoryId: true } }),
-    prisma.showPricing.findMany({ where: { showId } }),
-  ]);
-  const priceByCategory = new Map(pricing.map((p) => [p.seatCategoryId, toMoney(p.price)]));
-  return seats.reduce((sum, s) => sum + (priceByCategory.get(s.seatCategoryId) ?? 0), 0);
-}
 
 /**
  * Place a hold on the requested seats.
@@ -82,13 +71,13 @@ export async function createHold(userId: string, showId: string, seatIds: string
 
   emitSeatUpdate(SocketEvents.SEAT_HELD, showId, uniqueSeatIds, SeatStatus.HELD);
 
-  const totalAmount = await computeSeatTotal(showId, uniqueSeatIds);
+  const { totalMinor } = await quoteSeats(prisma, showId, uniqueSeatIds);
   return {
     id: hold.id,
     showId,
     seatIds: uniqueSeatIds,
     expiresAt: hold.expiresAt.toISOString(),
-    totalAmount,
+    totalAmount: minorToMajor(totalMinor),
   };
 }
 
