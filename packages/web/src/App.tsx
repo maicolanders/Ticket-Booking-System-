@@ -36,7 +36,7 @@ export default function App() {
 
         {/* Any signed-in user (customer flow) */}
         <Route
-          path="checkout"
+          path="checkout/:checkoutId"
           element={
             <RequireAuth>
               <Checkout />

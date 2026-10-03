@@ -1,7 +1,9 @@
-import axios from 'axios';
+import axios, { type AxiosInstance } from 'axios';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:4000';
+/** The Checkout API (Azure Functions), which accepts the same JWTs as the API. */
+const CHECKOUT_API_BASE = import.meta.env.VITE_CHECKOUT_API_URL ?? 'http://localhost:7071/api';
 
 const TOKEN_KEY = 'ticket_token';
 const USER_KEY = 'ticket_user';
@@ -22,13 +24,6 @@ export const tokenStore = {
   },
 };
 
-export const api = axios.create({ baseURL: `${API_BASE}/api` });
-
-api.interceptors.request.use((config) => {
-  const token = tokenStore.get();
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
 
 /* ---------------------------------------------------------------------------
  * Automatic session-expiry handling.
@@ -44,21 +39,33 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
 
 const AUTH_PATHS = ['/auth/login', '/auth/register'];
 
-api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    if (axios.isAxiosError(err)) {
-      const status = err.response?.status;
-      const url = err.config?.url ?? '';
-      const isAuthAttempt = AUTH_PATHS.some((p) => url.includes(p));
-      if (status === 401 && tokenStore.get() && !isAuthAttempt) {
-        tokenStore.clear();
-        onUnauthorized?.();
+/** Send the session token, and end the session when the server says it is stale. */
+function withSession(instance: AxiosInstance): AxiosInstance {
+  instance.interceptors.request.use((config) => {
+    const token = tokenStore.get();
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  });
+  instance.interceptors.response.use(
+    (res) => res,
+    (err) => {
+      if (axios.isAxiosError(err)) {
+        const status = err.response?.status;
+        const url = err.config?.url ?? '';
+        const isAuthAttempt = AUTH_PATHS.some((p) => url.includes(p));
+        if (status === 401 && tokenStore.get() && !isAuthAttempt) {
+          tokenStore.clear();
+          onUnauthorized?.();
+        }
       }
-    }
-    return Promise.reject(err);
-  },
-);
+      return Promise.reject(err);
+    },
+  );
+  return instance;
+}
+
+export const api = withSession(axios.create({ baseURL: `${API_BASE}/api` }));
+export const checkoutClient = withSession(axios.create({ baseURL: CHECKOUT_API_BASE }));
 
 /** Human-readable fallbacks per HTTP status when the server sends no message. */
 const STATUS_MESSAGES: Record<number, string> = {

@@ -14,5 +14,8 @@
     "SMTP_URL": "smtp://localhost:1025",
     "MAIL_FROM": "Ticket Booking <onboarding@resend.dev>",
     "RESEND_API_KEY": ""
+  },
+  "Host": {
+    "CORS": "http://localhost:5173"
   }
 }

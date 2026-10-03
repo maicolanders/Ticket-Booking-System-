@@ -184,6 +184,7 @@ Full reference in **[.env.example](.env.example)**. Summary:
 |---|---|---|
 | `VITE_API_URL` | `http://localhost:4000` | REST base (client calls `${VITE_API_URL}/api`) |
 | `VITE_SOCKET_URL` | `http://localhost:4000` | Socket.io endpoint |
+| `VITE_CHECKOUT_API_URL` | `http://localhost:7071/api` | Checkout API (Functions); the SPA checks out through it |
 
 ### Checkout API (`packages/functions/local.settings.json`)
 | Setting | Default | Purpose |
@@ -196,6 +197,7 @@ Full reference in **[.env.example](.env.example)**. Summary:
 | `CHECKOUT_RECOVERY_GRACE_SECONDS` | `120` | How long past expiry before the recovery timer expires an orphaned checkout |
 | `PAYMENT_API_URL`, `PAYMENT_TIMEOUT_MS` | `http://localhost:4100`, `10000` | Payment simulator; the timeout must exceed the provider's slowest processing |
 | `SMTP_URL`, `MAIL_FROM`, `RESEND_API_KEY` | Mailpit | Ticket email |
+| `Host.CORS` | `http://localhost:5173` | Lets the SPA call the Checkout API locally |
 
 ---
 
