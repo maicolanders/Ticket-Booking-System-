@@ -10,7 +10,9 @@ Built as a TypeScript monorepo: a **REST API** (Express + Socket.io + Prisma +
 PostgreSQL) and a **React SPA** (Vite + Tailwind), sharing one typed contract.
 
 > Design rationale for the hard parts (concurrency, TTL, waitlist) lives in
-> **[SYSTEM_DESIGN.md](SYSTEM_DESIGN.md)**.
+> **[SYSTEM_DESIGN.md](SYSTEM_DESIGN.md)**. The checkout re-implemented on Azure
+> Durable Functions is designed in **[DESIGN.md](DESIGN.md)**; operating it is
+> covered by **[RUNBOOK.md](RUNBOOK.md)**.
 
 ---
 
@@ -56,8 +58,11 @@ Ticket_Booking/
     ├── domain/                        # checkout business rules + persistence (shared by api and functions)
     │   ├── prisma/{schema.prisma, migrations/}
     │   └── src/db/client.ts           # the single Prisma client
+    ├── functions/                     # Checkout API: Azure Durable Functions on DTS
+    │   ├── host.json · local.settings.example.json
+    │   └── src/{http, orchestrators, activities, timers}
     ├── payment-sim/                   # local external payment provider
-    ├── acceptance/                    # public Checkout API acceptance tests
+    ├── acceptance/                    # Checkout API acceptance tests (public + failure scenarios)
     ├── api/
     │   ├── prisma/seed.ts              # demo data
     │   └── src/
@@ -96,6 +101,7 @@ npm run doctor
 cp packages/domain/.env.example packages/domain/.env
 cp packages/api/.env.example packages/api/.env
 cp packages/web/.env.example packages/web/.env
+cp packages/functions/local.settings.example.json packages/functions/local.settings.json
 
 # 4. Generate Prisma Client, apply the schema, and load demo data
 npm run db:generate
@@ -104,7 +110,16 @@ npm run db:seed
 
 # 5. Run API (:4000) and web (:5173) together
 npm run dev
+
+# 6. In another terminal: the Checkout API (Functions, :7071) on the DTS emulator
+npm run start:functions
 ```
+
+The Checkout API is at **http://localhost:7071/api/checkouts** and uses the
+legacy API's JWTs (`POST /api/auth/login`). `start:functions` builds and then
+starts the host; stop the host before rebuilding (a rebuild empties `dist/`
+under a running host). Its JSON logs go to stdout; keep them for tracing with
+`npm run start:functions 2>&1 | tee functions.log`.
 
 Open **http://localhost:5173**. The API is at **http://localhost:4000** (health:
 `GET /api/health`).
@@ -169,6 +184,18 @@ Full reference in **[.env.example](.env.example)**. Summary:
 |---|---|---|
 | `VITE_API_URL` | `http://localhost:4000` | REST base (client calls `${VITE_API_URL}/api`) |
 | `VITE_SOCKET_URL` | `http://localhost:4000` | Socket.io endpoint |
+
+### Checkout API (`packages/functions/local.settings.json`)
+| Setting | Default | Purpose |
+|---|---|---|
+| `DURABLE_TASK_SCHEDULER_CONNECTION_STRING` | `Endpoint=http://localhost:8080;TaskHub=default;Authentication=None` | DTS emulator (an Azure DTS resource in production) |
+| `TASKHUB_NAME` | `default` | Task hub used by `host.json` |
+| `AzureWebJobsStorage` | `UseDevelopmentStorage=true` | Azurite (host locks, timer trigger) |
+| `DATABASE_URL`, `JWT_SECRET` | as the API | Same database; same secret so the API's JWTs validate |
+| `HOLD_TTL_SECONDS` | `600` | Checkout hold lifetime (`10` for the acceptance suite) |
+| `CHECKOUT_RECOVERY_GRACE_SECONDS` | `120` | How long past expiry before the recovery timer expires an orphaned checkout |
+| `PAYMENT_API_URL`, `PAYMENT_TIMEOUT_MS` | `http://localhost:4100`, `10000` | Payment simulator; the timeout must exceed the provider's slowest processing |
+| `SMTP_URL`, `MAIL_FROM`, `RESEND_API_KEY` | Mailpit | Ticket email |
 
 ---
 
@@ -315,26 +342,27 @@ mail failures never block a booking in dev.
 
 ## Testing
 
+Run `npm run infra:up` first. One command per level:
+
+| Level | Command | What it covers | Needs |
+|---|---|---|---|
+| Unit | `npm run test:unit` | Every branch of the checkout saga: the orchestrator generator driven by a scripted fake Durable context (no host, no DB) | nothing |
+| Integration | `npm run test:integration` | `@ticket/domain` against real PostgreSQL and the payment simulator: locks, lock timeouts and retries, idempotency of every checkout step, contention, pricing, payment gateway outcomes, ticket delivery, recovery | infra |
+| Legacy API | `npm test` | The original in-process API suite (holds, TTL, waitlist) plus legacy payment and checkout-guard tests | infra |
+| Simulator | `npm run test:sim` | The payment provider in isolation | nothing |
+| Acceptance | `npm run test:acceptance` | Black-box Checkout API: the public contract suite plus failure scenarios (concurrent payments, `tok_flaky`, `tok_timeout`, cancel during payment, seat contention, 401/400/404/409) | infra, legacy API, Functions app with `HOLD_TTL_SECONDS=10` |
+| Restart drill | `npm run test:restart` | SIGKILLs the Functions host mid-charge, restarts it, and checks one charge and a CONFIRMED checkout | infra, seeded legacy API, port 7071 **free** (it runs its own host) |
+
+For the acceptance level, start the Functions app with a short hold so the expiry
+scenario runs quickly:
+
 ```bash
-npm test                  # existing API suite
-npm run test:sim          # payment simulator unit tests
-npm run test:acceptance   # public Checkout API acceptance tests
+HOLD_TTL_SECONDS=10 npm run start:functions   # environment overrides local.settings.json
+npm run test:acceptance
 ```
 
-The API suite is an in-process integration suite against real PostgreSQL. The
-simulator suite tests the external provider in isolation. The acceptance suite is
-black-box end-to-end coverage across the Functions app, PostgreSQL, payment simulator,
-and Mailpit.
-
-The suite targets the graded invariants: N parallel holds on one seat yield exactly
-one success and N−1 conflicts; an expired hold is swept back to `AVAILABLE`; a
-cancellation offers the freed seat to the next entrant and re-offers on lapse. Tests
-run against PostgreSQL (`DATABASE_URL`) and the payment simulator; run
-`npm run infra:up` first. The acceptance suite also needs the legacy API and the
-candidate's Functions app. Against this starting point it exits quickly with
-`Checkout API not reachable at http://localhost:7071/api`; that is expected until
-the Checkout API exists. Run the Functions app with `HOLD_TTL_SECONDS=10` for the
-public acceptance scenarios.
+Every guarantee claimed in [DESIGN.md](DESIGN.md#failure-modes) names the test that
+demonstrates it.
 
 ---
 
@@ -366,16 +394,20 @@ never in a committed file.
 | Script | Does |
 |---|---|
 | `npm run dev` | API + web together (concurrently) |
-| `npm run build` | Build API (tsup) + web (vite) |
+| `npm run build` | Generate the Prisma client, build API (tsup) + web (vite) |
 | `npm start` | Start built API |
+| `npm run start:functions` | Build and start the Checkout API (Functions host on :7071) |
 | `npm run db:generate` | `prisma generate` (regenerate the Prisma client) |
 | `npm run db:migrate` | `prisma migrate dev` (create/apply migrations) |
 | `npm run db:deploy` | `prisma migrate deploy` (apply committed migrations) |
 | `npm run db:seed` | Load demo data |
 | `npm run db:reset` | Drop, re-migrate, re-seed |
+| `npm run test:unit` | Checkout orchestrator unit tests |
+| `npm run test:integration` | Domain integration tests (PostgreSQL, simulator) |
 | `npm test` | API test suite |
 | `npm run test:sim` | Payment simulator suite |
-| `npm run test:acceptance` | Public Checkout API acceptance suite |
+| `npm run test:acceptance` | Checkout API acceptance suites |
+| `npm run test:restart` | Functions host crash/restart drill |
 | `npm run infra:up` | Start and wait for all local infrastructure |
 | `npm run infra:down` | Stop local infrastructure |
 | `npm run infra:reset` | Stop infrastructure and remove its volumes |
