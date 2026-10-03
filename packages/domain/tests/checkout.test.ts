@@ -165,3 +165,15 @@ describe('ending a checkout without a booking', () => {
     expect(await seats(seatIds)).toEqual([SeatStatus.HELD]);
   });
 });
+
+describe('failing with no money moved', () => {
+  it('can release the seats', async () => {
+    const { checkoutId, seatIds } = await newCheckout({ seats: 1 });
+    await holdCheckoutSeats(checkoutId, TTL);
+    await beginCheckoutPayment(checkoutId);
+
+    await failCheckout(checkoutId, 'payment rejected: validation_error', { releaseSeats: true });
+
+    expect(await seats(seatIds)).toEqual([SeatStatus.AVAILABLE]);
+  });
+});

@@ -238,13 +238,21 @@ export function releaseCheckout(checkoutId: string, to: ReleaseStatus, failureRe
 }
 
 /**
- * Give up and hand over to an operator. Seats stay held on purpose: when the
+ * Give up and hand over to an operator. By default the seats stay held: when the
  * payment outcome is unknown, reselling them could sell a seat already paid for.
+ * Pass releaseSeats only when no money can have moved.
  */
-export function failCheckout(checkoutId: string, failureReason: string): Promise<Checkout> {
+export function failCheckout(
+  checkoutId: string,
+  failureReason: string,
+  options: { releaseSeats?: boolean } = {},
+): Promise<Checkout> {
   return runInTransaction(async (tx) => {
     const checkout = await lockCheckout(tx, checkoutId);
     if (isTerminal(checkout.status)) return checkout;
+    if (options.releaseSeats && checkout.holdId) {
+      await endHoldTx(tx, checkout.holdId, [HoldStatus.ACTIVE, HoldStatus.CAPTURING], HoldStatus.RELEASED);
+    }
     return transition(tx, checkout, CheckoutStatus.FAILED, { failureReason });
   });
 }
