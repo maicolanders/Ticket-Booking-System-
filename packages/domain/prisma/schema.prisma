@@ -213,6 +213,8 @@ model Booking {
   status      BookingStatus @default(CONFIRMED)
   totalAmount Decimal       @db.Decimal(10, 2)
   qrToken     String
+  // The payment that bought this booking. Unique: one charge pays for at most one booking.
+  chargeId    String?       @unique
   createdAt   DateTime      @default(now())
   cancelledAt DateTime?
 

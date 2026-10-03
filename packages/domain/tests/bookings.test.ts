@@ -16,14 +16,15 @@ const seatStatuses = async (ids: string[]) =>
   (await prisma.showSeat.findMany({ where: { id: { in: ids } } })).map((seat) => seat.status);
 
 describe('convertHoldToBooking', () => {
-  it('books the held seats at the quoted price and converts the hold', async () => {
+  it('books the held seats at the quoted price, paid by the given charge', async () => {
     const { showSeatIds, user, hold } = await heldSeats(2);
+    const chargeId = `ch_${hold.holdId}`;
 
-    const booking = await convertHoldToBooking(hold.holdId);
+    const booking = await convertHoldToBooking(hold.holdId, { chargeId });
 
     expect(booking.totalMinor).toBe(5000);
     const stored = await prisma.booking.findUniqueOrThrow({ where: { id: booking.bookingId } });
-    expect(stored).toMatchObject({ userId: user.id, status: BookingStatus.CONFIRMED });
+    expect(stored).toMatchObject({ userId: user.id, status: BookingStatus.CONFIRMED, chargeId });
     expect(stored.totalAmount.toString()).toBe('50');
     expect(await seatStatuses(showSeatIds)).toEqual([SeatStatus.BOOKED, SeatStatus.BOOKED]);
     expect((await prisma.hold.findUniqueOrThrow({ where: { id: hold.holdId } })).status).toBe(HoldStatus.CONVERTED);

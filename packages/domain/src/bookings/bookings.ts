@@ -46,7 +46,7 @@ export async function inBookingTransaction<T>(work: (tx: Tx) => Promise<T>): Pro
  */
 export async function createBooking(
   tx: Tx,
-  input: { userId: string; showId: string; seatIds: string[] },
+  input: { userId: string; showId: string; seatIds: string[]; chargeId?: string },
 ): Promise<CreatedBooking> {
   const quote = await quoteSeats(tx, input.showId, input.seatIds);
   const reference = bookingReference();
@@ -58,6 +58,7 @@ export async function createBooking(
       status: BookingStatus.CONFIRMED,
       totalAmount: minorToDecimal(quote.totalMinor),
       qrToken: signTicketToken(reference),
+      chargeId: input.chargeId,
       seats: {
         create: quote.seats.map((seat) => ({
           showSeatId: seat.showSeatId,
@@ -76,8 +77,11 @@ export async function createBooking(
   };
 }
 
-/** Convert an ACTIVE, unexpired hold into a confirmed booking for its owner. */
-export function convertHoldToBooking(holdId: string): Promise<CreatedBooking> {
+/** Convert an ACTIVE, unexpired hold into a confirmed booking for its owner, paid by `chargeId`. */
+export function convertHoldToBooking(
+  holdId: string,
+  payment: { chargeId?: string } = {},
+): Promise<CreatedBooking> {
   return inBookingTransaction(async (tx) => {
     const hold = await tx.hold.findUnique({
       where: { id: holdId },
@@ -93,7 +97,8 @@ export function convertHoldToBooking(holdId: string): Promise<CreatedBooking> {
       where: { id: holdId },
       select: { status: true, expiresAt: true },
     });
-    if (current.status !== HoldStatus.ACTIVE) throw new DomainError('conflict', 'This hold is no longer active');
+    if (current.status !== HoldStatus.ACTIVE)
+      throw new DomainError('conflict', 'This hold is no longer active');
     if (!isHoldActive(current)) throw new DomainError('expired', 'Your seat hold has expired');
     if (seatIds.length === 0) throw new DomainError('conflict', 'This hold has no seats');
 
@@ -110,7 +115,12 @@ export function convertHoldToBooking(holdId: string): Promise<CreatedBooking> {
     });
     if (count !== 1) throw new DomainError('conflict', 'This hold is no longer active');
 
-    return createBooking(tx, { userId: hold.userId, showId: hold.showId, seatIds });
+    return createBooking(tx, {
+      userId: hold.userId,
+      showId: hold.showId,
+      seatIds,
+      chargeId: payment.chargeId,
+    });
   });
 }
 

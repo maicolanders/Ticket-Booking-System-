@@ -17,6 +17,7 @@ export const unauthorized = (message = 'Unauthorized') => new HttpError(401, mes
 export const forbidden = (message = 'Forbidden') => new HttpError(403, message);
 export const notFound = (message = 'Not found') => new HttpError(404, message);
 export const conflict = (message: string, details?: unknown) => new HttpError(409, message, details);
+export const paymentRequired = (message: string) => new HttpError(402, message);
 export const gone = (message = 'This resource has expired') => new HttpError(410, message);
 
 const STATUS_BY_DOMAIN_CODE: Record<DomainErrorCode, number> = {
