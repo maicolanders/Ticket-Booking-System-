@@ -6,11 +6,11 @@ import {
   inBookingTransaction,
   createBooking,
   lockSeats,
+  waitlistOfferEmailHtml,
 } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict, gone } from '../../lib/errors';
 import { sendMail } from '../../lib/mailer';
-import { waitlistOfferEmailHtml } from '../../lib/emailTemplates';
 import { emitSeatUpdate } from '../../realtime/io';
 import {
   SeatStatus,

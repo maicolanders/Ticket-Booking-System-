@@ -19,3 +19,7 @@ export * from './payments/payments';
 export { SimulatorPaymentGateway, type SimulatorGatewayConfig } from './payments/simulatorGateway';
 export { logger, createLogger, type Logger, type LogFields } from './observability/logger';
 export * from './checkout/checkout';
+export * from './tickets/mailer';
+export * from './tickets/qr';
+export * from './tickets/emailTemplates';
+export * from './tickets/tickets';

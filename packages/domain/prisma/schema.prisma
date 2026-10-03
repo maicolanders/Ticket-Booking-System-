@@ -221,19 +221,21 @@ model Hold {
 }
 
 model Booking {
-  id          String        @id @default(cuid())
-  reference   String        @unique
-  showId      String
-  show        Show          @relation(fields: [showId], references: [id])
-  userId      String
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status      BookingStatus @default(CONFIRMED)
-  totalAmount Decimal       @db.Decimal(10, 2)
-  qrToken     String
+  id                String        @id @default(cuid())
+  reference         String        @unique
+  showId            String
+  show              Show          @relation(fields: [showId], references: [id])
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status            BookingStatus @default(CONFIRMED)
+  totalAmount       Decimal       @db.Decimal(10, 2)
+  qrToken           String
   // The payment that bought this booking. Unique: one charge pays for at most one booking.
-  chargeId    String?       @unique
-  createdAt   DateTime      @default(now())
-  cancelledAt DateTime?
+  chargeId          String?       @unique
+  // Set once the QR ticket email went out; makes ticket delivery safe to retry.
+  ticketEmailSentAt DateTime?
+  createdAt         DateTime      @default(now())
+  cancelledAt       DateTime?
 
   seats    BookingSeat[]
   checkout Checkout?

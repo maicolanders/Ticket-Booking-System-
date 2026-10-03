@@ -21,12 +21,17 @@
     "@prisma/client": "^5.22.0",
     "@ticket/shared": "*",
     "jsonwebtoken": "^9.0.2",
-    "prisma": "^5.22.0"
+    "nodemailer": "^6.9.16",
+    "prisma": "^5.22.0",
+    "qrcode": "^1.5.4",
+    "resend": "^4.0.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.2",
+    "@types/nodemailer": "^6.4.17",
+    "@types/qrcode": "^1.5.5",
     "bcryptjs": "^2.4.3",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

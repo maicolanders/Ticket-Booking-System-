@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Stub the mailer so tests never touch the network (no Ethereal account creation,
-// no Resend call). Both bookings and waitlist import sendMail from this module.
-vi.mock('../src/lib/mailer', () => ({ sendMail: vi.fn(async () => {}) }));
+// no Resend call). Ticket delivery uses `mailer`; waitlist offers use `sendMail`.
+vi.mock('../src/lib/mailer', () => ({
+  sendMail: vi.fn(async () => {}),
+  mailer: { send: vi.fn(async () => {}) },
+}));
 
 import { createHold } from '../src/modules/holds/holds.service';
 import { createBooking, cancelBooking } from '../src/modules/bookings/bookings.service';

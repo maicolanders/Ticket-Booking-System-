@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('../src/lib/mailer', () => ({ sendMail: vi.fn(async () => {}) }));
+vi.mock('../src/lib/mailer', () => ({
+  sendMail: vi.fn(async () => {}),
+  mailer: { send: vi.fn(async () => {}) },
+}));
 
 import { createHold } from '../src/modules/holds/holds.service';
 import { createBooking } from '../src/modules/bookings/bookings.service';
