@@ -54,3 +54,6 @@ Thumbs.db
 
 # Deliverable artifact
 ticket-booking-source.zip
+
+# Azure Functions local settings (copy from local.settings.example.json)
+packages/functions/local.settings.json
