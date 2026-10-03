@@ -1,5 +1,7 @@
 # System Design — Ticket Booking System
 
+> Describes the original system. The checkout now runs on Azure Durable Functions; see [DESIGN.md](DESIGN.md), which supersedes the hold, payment and expiry sections below for checkout.
+
 ## Overview
 
 A monorepo (npm workspaces) with three packages: a stateless **Express + Socket.io REST API**, a **React (Vite) SPA**, and a **shared** TypeScript package holding the enums, DTOs, and Zod schemas that both sides import — so the wire contract is defined once and typechecked end-to-end. **PostgreSQL** (via Prisma) is the single source of truth; the API is horizontally stateless apart from an in-process TTL sweeper.
