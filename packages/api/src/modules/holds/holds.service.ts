@@ -1,17 +1,9 @@
-import { Prisma } from '@prisma/client';
-import { prisma } from '@ticket/domain';
+import { prisma, runInTransaction, lockSeats } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict } from '../../lib/errors';
 import { toMoney } from '../../lib/money';
 import { emitSeatUpdate } from '../../realtime/io';
 import { SeatStatus, HoldStatus, SocketEvents, type HoldDTO } from '@ticket/shared';
-
-interface LockedSeatRow {
-  id: string;
-  status: SeatStatus;
-  holdId: string | null;
-  showId: string;
-}
 
 /** Sum the price of a set of seats for a show, using per-category show pricing. */
 async function computeSeatTotal(showId: string, seatIds: string[]): Promise<number> {
@@ -39,61 +31,54 @@ export async function createHold(userId: string, showId: string, seatIds: string
 
   const expiresAt = new Date(Date.now() + env.HOLD_TTL_SECONDS * 1000);
 
-  const hold = await prisma.$transaction(
-    async (tx) => {
-      // Pessimistic lock — serializes concurrent attempts on the same seats.
-      const locked = await tx.$queryRaw<LockedSeatRow[]>(
-        Prisma.sql`SELECT "id", "status", "holdId", "showId" FROM "ShowSeat" WHERE "id" IN (${Prisma.join(
-          uniqueSeatIds,
-        )}) FOR UPDATE`,
-      );
+  const hold = await runInTransaction(async (tx) => {
+    // Pessimistic lock — serializes concurrent attempts on the same seats.
+    const locked = await lockSeats(tx, uniqueSeatIds);
 
-      if (locked.length !== uniqueSeatIds.length) throw badRequest('One or more seats do not exist');
-      if (locked.some((s) => s.showId !== showId)) throw badRequest('Seats do not belong to this show');
+    if (locked.length !== uniqueSeatIds.length) throw badRequest('One or more seats do not exist');
+    if (locked.some((s) => s.showId !== showId)) throw badRequest('Seats do not belong to this show');
 
-      // Lazy-expire stale checkout holds on these seats (backstop for the sweeper).
-      const heldWithHold = locked.filter((s) => s.status === SeatStatus.HELD && s.holdId);
-      if (heldWithHold.length > 0) {
-        const holdIds = [...new Set(heldWithHold.map((s) => s.holdId!))];
-        const expiredHolds = await tx.hold.findMany({
-          where: { id: { in: holdIds }, status: HoldStatus.ACTIVE, expiresAt: { lt: new Date() } },
-          select: { id: true },
+    // Lazy-expire stale checkout holds on these seats (backstop for the sweeper).
+    const heldWithHold = locked.filter((s) => s.status === SeatStatus.HELD && s.holdId);
+    if (heldWithHold.length > 0) {
+      const holdIds = [...new Set(heldWithHold.map((s) => s.holdId!))];
+      const expiredHolds = await tx.hold.findMany({
+        where: { id: { in: holdIds }, status: HoldStatus.ACTIVE, expiresAt: { lt: new Date() } },
+        select: { id: true },
+      });
+      const expiredIds = new Set(expiredHolds.map((h) => h.id));
+      if (expiredIds.size > 0) {
+        await tx.showSeat.updateMany({
+          where: { holdId: { in: [...expiredIds] } },
+          data: { status: SeatStatus.AVAILABLE, holdId: null },
         });
-        const expiredIds = new Set(expiredHolds.map((h) => h.id));
-        if (expiredIds.size > 0) {
-          await tx.showSeat.updateMany({
-            where: { holdId: { in: [...expiredIds] } },
-            data: { status: SeatStatus.AVAILABLE, holdId: null },
-          });
-          await tx.hold.updateMany({
-            where: { id: { in: [...expiredIds] } },
-            data: { status: HoldStatus.EXPIRED },
-          });
-          for (const s of locked) {
-            if (s.holdId && expiredIds.has(s.holdId)) {
-              s.status = SeatStatus.AVAILABLE;
-              s.holdId = null;
-            }
+        await tx.hold.updateMany({
+          where: { id: { in: [...expiredIds] } },
+          data: { status: HoldStatus.EXPIRED },
+        });
+        for (const s of locked) {
+          if (s.holdId && expiredIds.has(s.holdId)) {
+            s.status = SeatStatus.AVAILABLE;
+            s.holdId = null;
           }
         }
       }
+    }
 
-      const unavailable = locked.filter((s) => s.status !== SeatStatus.AVAILABLE);
-      if (unavailable.length > 0) {
-        throw conflict('Some of the selected seats are no longer available', {
-          seatIds: unavailable.map((s) => s.id),
-        });
-      }
-
-      const created = await tx.hold.create({ data: { showId, userId, expiresAt } });
-      await tx.showSeat.updateMany({
-        where: { id: { in: uniqueSeatIds } },
-        data: { status: SeatStatus.HELD, holdId: created.id },
+    const unavailable = locked.filter((s) => s.status !== SeatStatus.AVAILABLE);
+    if (unavailable.length > 0) {
+      throw conflict('Some of the selected seats are no longer available', {
+        seatIds: unavailable.map((s) => s.id),
       });
-      return created;
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 10000, maxWait: 5000 },
-  );
+    }
+
+    const created = await tx.hold.create({ data: { showId, userId, expiresAt } });
+    await tx.showSeat.updateMany({
+      where: { id: { in: uniqueSeatIds } },
+      data: { status: SeatStatus.HELD, holdId: created.id },
+    });
+    return created;
+  });
 
   emitSeatUpdate(SocketEvents.SEAT_HELD, showId, uniqueSeatIds, SeatStatus.HELD);
 

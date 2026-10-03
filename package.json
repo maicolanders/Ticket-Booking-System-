@@ -21,6 +21,7 @@
     "db:seed": "npm run db:seed -w @ticket/api",
     "db:reset": "npm run db:reset -w @ticket/domain && npm run db:seed",
     "test": "npm run test -w @ticket/api",
+    "test:integration": "npm run test -w @ticket/domain",
     "test:sim": "npm run test -w @ticket/payment-sim",
     "test:acceptance": "npm run test -w @ticket/acceptance",
     "infra:up": "docker compose up -d --wait",

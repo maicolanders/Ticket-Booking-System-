@@ -3,7 +3,7 @@ import { createHold } from '../src/modules/holds/holds.service';
 import { HttpError } from '../src/lib/errors';
 import { prisma } from '@ticket/domain';
 import { SeatStatus } from '@ticket/shared';
-import { createShowFixture, createUser } from './helpers';
+import { createShowFixture, createUser } from '@ticket/domain/testing';
 
 /**
  * Concurrency: two customers must never both hold the same seat. We fire N hold

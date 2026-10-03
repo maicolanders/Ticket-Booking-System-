@@ -13,7 +13,7 @@ import {
 } from '../src/modules/waitlist/waitlist.service';
 import { prisma } from '@ticket/domain';
 import { SeatStatus, WaitlistStatus, OfferStatus, BookingStatus } from '@ticket/shared';
-import { createShowFixture, createUser } from './helpers';
+import { createShowFixture, createUser } from '@ticket/domain/testing';
 
 /** Book every seat of a fixture (sells the single category out). */
 async function bookAllSeats(userId: string, showId: string, seatIds: string[]) {
