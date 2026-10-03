@@ -16,6 +16,12 @@ export interface CreatedBooking {
   totalMinor: number;
 }
 
+/** The payment behind a booking: our idempotency key (unique) and the provider's charge id. */
+export interface BookingPayment {
+  paymentKey?: string;
+  chargeId?: string;
+}
+
 const MAX_REFERENCE_ATTEMPTS = 3;
 
 const isReferenceCollision = (error: unknown): boolean =>
@@ -46,7 +52,7 @@ export async function inBookingTransaction<T>(work: (tx: Tx) => Promise<T>): Pro
  */
 export async function createBooking(
   tx: Tx,
-  input: { userId: string; showId: string; seatIds: string[]; chargeId?: string },
+  input: { userId: string; showId: string; seatIds: string[] } & BookingPayment,
 ): Promise<CreatedBooking> {
   const quote = await quoteSeats(tx, input.showId, input.seatIds);
   const reference = bookingReference();
@@ -59,6 +65,7 @@ export async function createBooking(
       totalAmount: minorToDecimal(quote.totalMinor),
       qrToken: signTicketToken(reference),
       chargeId: input.chargeId,
+      paymentKey: input.paymentKey,
       seats: {
         create: quote.seats.map((seat) => ({
           showSeatId: seat.showSeatId,
@@ -77,10 +84,10 @@ export async function createBooking(
   };
 }
 
-/** Convert an ACTIVE, unexpired hold into a confirmed booking for its owner, paid by `chargeId`. */
+/** Convert an ACTIVE, unexpired hold into a confirmed booking for its owner, paid by `payment`. */
 export function convertHoldToBooking(
   holdId: string,
-  payment: { chargeId?: string } = {},
+  payment: BookingPayment = {},
 ): Promise<CreatedBooking> {
   return inBookingTransaction(async (tx) => {
     const hold = await tx.hold.findUnique({
@@ -119,7 +126,7 @@ export function convertHoldToBooking(
       userId: hold.userId,
       showId: hold.showId,
       seatIds,
-      chargeId: payment.chargeId,
+      ...payment,
     });
   });
 }

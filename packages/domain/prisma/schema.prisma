@@ -230,8 +230,12 @@ model Booking {
   status            BookingStatus @default(CONFIRMED)
   totalAmount       Decimal       @db.Decimal(10, 2)
   qrToken           String
-  // The payment that bought this booking. Unique: one charge pays for at most one booking.
-  chargeId          String?       @unique
+  // Our idempotency key for the payment that bought this booking. Unique: one
+  // payment pays for at most one booking. Ours, not the provider's: provider ids
+  // are not guaranteed unique to us (the simulator restarts its sequence on reset).
+  paymentKey        String?       @unique
+  // The provider's charge id, kept for refunds and reconciliation.
+  chargeId          String?
   // Set once the QR ticket email went out; makes ticket delivery safe to retry.
   ticketEmailSentAt DateTime?
   createdAt         DateTime      @default(now())

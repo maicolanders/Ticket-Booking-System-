@@ -4,6 +4,8 @@ import { CheckoutStatus } from '@ticket/shared';
 import {
   PaymentRejectedError,
   beginCheckoutPayment,
+  checkoutChargeKey,
+  checkoutRefundKey,
   completeCheckout,
   confirmCheckoutBooking,
   deliverTicket,
@@ -55,9 +57,6 @@ async function loadCheckout(checkoutId: string): Promise<Checkout> {
   return checkout;
 }
 
-const chargeKey = (checkoutId: string) => `${checkoutId}:charge`;
-const refundKey = (checkoutId: string) => `${checkoutId}:refund`;
-
 activity<CheckoutRef, CheckoutState>(Activities.holdSeats, async ({ checkoutId }, log) => {
   const checkout = await holdCheckoutSeats(checkoutId, config.HOLD_TTL_SECONDS);
   log.info(checkout.status === CheckoutStatus.AWAITING_PAYMENT ? 'checkout.seats.held' : 'checkout.seats.rejected', {
@@ -82,7 +81,7 @@ activity<CheckoutRef & { paymentToken: string }, ChargeResult>(
     if (checkout.amountDue === null) throw new Error(`Checkout ${checkoutId} has no amount due`);
     try {
       const outcome = await paymentGateway.charge({
-        idempotencyKey: chargeKey(checkoutId),
+        idempotencyKey: checkoutChargeKey(checkoutId),
         correlationId,
         amountMinor: checkout.amountDue,
         currency: checkout.currency,
@@ -116,7 +115,7 @@ activity<CheckoutRef & { chargeId: string }, RefundResult>(
   Activities.refund,
   async ({ checkoutId, correlationId, chargeId }, log) => {
     try {
-      await paymentGateway.refund({ idempotencyKey: refundKey(checkoutId), correlationId, chargeId });
+      await paymentGateway.refund({ idempotencyKey: checkoutRefundKey(checkoutId), correlationId, chargeId });
       log.info('checkout.compensation.refunded', { chargeId });
       return { kind: 'refunded' };
     } catch (err) {

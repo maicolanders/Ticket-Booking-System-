@@ -83,12 +83,12 @@ export async function createBooking(
 
   let booking: CreatedBooking;
   try {
-    booking = await convertHoldToBooking(holdId, { chargeId: outcome.chargeId });
+    booking = await convertHoldToBooking(holdId, { chargeId: outcome.chargeId, paymentKey: idempotencyKey });
   } catch (error) {
-    // A repeated or concurrent request reuses the same charge (same idempotency key).
-    // If that charge already paid for a booking, this request is a replay: answer with
+    // A repeated or concurrent request reuses the same payment (same idempotency key).
+    // If that payment already bought a booking, this request is a replay: answer with
     // that booking. Refunding here would take the money for a booking that stands.
-    const paid = await prisma.booking.findUnique({ where: { chargeId: outcome.chargeId } });
+    const paid = await prisma.booking.findUnique({ where: { paymentKey: idempotencyKey } });
     if (paid) return getBookingDetail(paid.id, userId);
     try {
       await paymentGateway.refund({

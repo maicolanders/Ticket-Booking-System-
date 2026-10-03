@@ -61,3 +61,19 @@ describe('cancelBooking', () => {
     await expect(cancelBooking(booking.bookingId)).rejects.toMatchObject({ code: 'conflict' });
   });
 });
+
+describe('booking payments', () => {
+  it('are unique by our payment key, not by the provider charge id (which may repeat after a reset)', async () => {
+    const first = await heldSeats(1);
+    const second = await heldSeats(1);
+    const third = await heldSeats(1);
+
+    await convertHoldToBooking(first.hold.holdId, { chargeId: 'ch_000001', paymentKey: `key-${first.hold.holdId}` });
+    await expect(
+      convertHoldToBooking(second.hold.holdId, { chargeId: 'ch_000001', paymentKey: `key-${second.hold.holdId}` }),
+    ).resolves.toMatchObject({ reference: expect.stringMatching(/^BK-/) });
+    await expect(
+      convertHoldToBooking(third.hold.holdId, { chargeId: 'ch_000002', paymentKey: `key-${first.hold.holdId}` }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+  });
+});

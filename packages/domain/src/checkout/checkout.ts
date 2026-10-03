@@ -23,6 +23,10 @@ import { lockSeats } from '../seats/seats';
 
 export type { Checkout };
 
+/** Payment idempotency keys are fixed per checkout, so every retry reuses them. */
+export const checkoutChargeKey = (checkoutId: string) => `${checkoutId}:charge`;
+export const checkoutRefundKey = (checkoutId: string) => `${checkoutId}:refund`;
+
 const NEXT: Record<CheckoutStatus, readonly CheckoutStatus[]> = {
   PENDING: ['AWAITING_PAYMENT', 'REJECTED', 'FAILED'],
   AWAITING_PAYMENT: ['PROCESSING_PAYMENT', 'EXPIRED', 'CANCELLED', 'FAILED'],
@@ -196,6 +200,7 @@ export function confirmCheckoutBooking(
       showId: checkout.showId,
       seatIds,
       chargeId,
+      paymentKey: checkoutChargeKey(checkoutId),
     });
     checkout = await tx.checkout.update({
       where: { id: checkoutId },

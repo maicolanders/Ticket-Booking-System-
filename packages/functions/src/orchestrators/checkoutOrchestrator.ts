@@ -95,9 +95,16 @@ export function* checkoutOrchestrator(context: OrchestrationContext): Generator<
   if (charge.kind === 'rejected') return yield* fail(`payment rejected by provider: ${charge.code}`, true);
 
   report(CheckoutStatus.PROCESSING_PAYMENT, 'booking');
-  const booked = yield* call<ConfirmResult>(Activities.confirmBooking, RetryPolicies.database, {
-    chargeId: charge.chargeId,
-  });
+  let booked: ConfirmResult;
+  try {
+    booked = yield* call<ConfirmResult>(Activities.confirmBooking, RetryPolicies.database, {
+      chargeId: charge.chargeId,
+    });
+  } catch {
+    // Retries exhausted: an earlier attempt may still have committed the booking, so
+    // neither refunding nor releasing is safe. Money and seats stay put for an operator.
+    return yield* fail(`booking outcome unknown after payment (charge ${charge.chargeId}); reconcile`, false);
+  }
   if (booked.outcome !== 'booked') {
     // Compensation: this checkout's own charge (unique key) is refunded before the seats go back.
     report(CheckoutStatus.PROCESSING_PAYMENT, 'refunding');
