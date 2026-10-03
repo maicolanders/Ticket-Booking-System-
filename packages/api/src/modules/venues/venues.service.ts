@@ -1,4 +1,4 @@
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { badRequest, notFound, conflict } from '../../lib/errors';
 import type { CreateVenueInput, CreateCategoryInput, GenerateSeatsInput } from '@ticket/shared';
 

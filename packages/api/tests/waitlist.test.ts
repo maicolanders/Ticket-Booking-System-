@@ -11,7 +11,7 @@ import {
   acceptOffer,
   processExpiredOffers,
 } from '../src/modules/waitlist/waitlist.service';
-import { prisma } from '../src/lib/prisma';
+import { prisma } from '@ticket/domain';
 import { SeatStatus, WaitlistStatus, OfferStatus, BookingStatus } from '@ticket/shared';
 import { createShowFixture, createUser } from './helpers';
 

@@ -1,4 +1,4 @@
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { notFound, forbidden } from '../../lib/errors';
 import { verifyTicketToken } from '../../lib/jwt';
 import { generateQrDataUrl } from '../../lib/qr';

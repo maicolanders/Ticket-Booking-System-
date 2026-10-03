@@ -4,7 +4,7 @@ import { env } from './config/env';
 import { logger } from './lib/logger';
 import { initSocket } from './realtime/io';
 import { startSweeper } from './jobs/sweeper';
-import { prisma } from './lib/prisma';
+import { prisma } from '@ticket/domain';
 
 function main(): void {
   const app = createApp();

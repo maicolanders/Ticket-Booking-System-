@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { notFound, forbidden, conflict, gone } from '../../lib/errors';
 import { bookingReference } from '../../lib/ids';
 import { signTicketToken } from '../../lib/jwt';

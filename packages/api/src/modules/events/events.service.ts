@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { notFound } from '../../lib/errors';
 import { toMoney } from '../../lib/money';
 import type { CreateEventInput, EventFilterInput } from '@ticket/shared';

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict } from '../../lib/errors';
 import { toMoney } from '../../lib/money';

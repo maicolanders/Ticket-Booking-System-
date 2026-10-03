@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { notFound, forbidden } from '../../lib/errors';
 import { toMoney } from '../../lib/money';
 import { generateQrDataUrl, generateQrBuffer } from '../../lib/qr';

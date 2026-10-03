@@ -53,13 +53,16 @@ Ticket_Booking/
 ├── README.md · SYSTEM_DESIGN.md
 └── packages/
     ├── shared/  src/index.ts          # enums, DTOs, Zod schemas, socket events
+    ├── domain/                        # checkout business rules + persistence (shared by api and functions)
+    │   ├── prisma/{schema.prisma, migrations/}
+    │   └── src/db/client.ts           # the single Prisma client
     ├── payment-sim/                   # local external payment provider
     ├── acceptance/                    # public Checkout API acceptance tests
     ├── api/
-    │   ├── prisma/{schema.prisma, migrations/, seed.ts}
+    │   ├── prisma/seed.ts              # demo data
     │   └── src/
     │       ├── app.ts · index.ts · config/env.ts
-    │       ├── lib/    {prisma, jwt, mailer, qr, money, ids, errors, …}
+    │       ├── lib/    {jwt, mailer, qr, money, ids, errors, …}
     │       ├── middleware/ {auth, validate, error}
     │       ├── modules/ {auth, venues, events, shows, seats, holds,
     │       │             bookings, waitlist, reports, tickets}
@@ -90,6 +93,7 @@ npm run infra:up
 npm run doctor
 
 # 3. Configure env (defaults already match docker-compose)
+cp packages/domain/.env.example packages/domain/.env
 cp packages/api/.env.example packages/api/.env
 cp packages/web/.env.example packages/web/.env
 
@@ -170,7 +174,7 @@ Full reference in **[.env.example](.env.example)**. Summary:
 
 ## Database schema
 
-PostgreSQL via Prisma (`packages/api/prisma/schema.prisma`). Core entities:
+PostgreSQL via Prisma (`packages/domain/prisma/schema.prisma`). Core entities:
 
 | Model | Purpose | Key constraints |
 |---|---|---|
@@ -191,7 +195,7 @@ When a show is created, the venue's `VenueSeat`s are **snapshotted** into `ShowS
 rows (all `AVAILABLE`), so each show has independent inventory.
 
 A ready-to-apply initial migration is committed at
-`packages/api/prisma/migrations/0_init/` — `npm run db:deploy` applies it.
+`packages/domain/prisma/migrations/0_init/` — `npm run db:deploy` applies it.
 
 ---
 
