@@ -28,8 +28,8 @@ credentials.json
 service-account*.json
 
 # Prisma
-packages/api/prisma/*.db
-packages/api/prisma/*.db-journal
+packages/domain/prisma/*.db
+packages/domain/prisma/*.db-journal
 
 # Logs
 *.log
@@ -54,3 +54,6 @@ Thumbs.db
 
 # Deliverable artifact
 ticket-booking-source.zip
+
+# Azure Functions local settings (copy from local.settings.example.json)
+packages/functions/local.settings.json

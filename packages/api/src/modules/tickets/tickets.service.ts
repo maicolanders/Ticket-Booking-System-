@@ -1,7 +1,6 @@
-import { prisma } from '../../lib/prisma';
+import { prisma, generateQrDataUrl } from '@ticket/domain';
 import { notFound, forbidden } from '../../lib/errors';
-import { verifyTicketToken } from '../../lib/jwt';
-import { generateQrDataUrl } from '../../lib/qr';
+import { verifyTicketToken } from '@ticket/domain';
 import { BookingStatus, type TicketVerifyDTO } from '@ticket/shared';
 
 /** Return the QR data URL for a booking the requester owns (for on-screen display). */

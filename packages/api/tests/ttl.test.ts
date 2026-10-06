@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createHold, releaseExpiredHolds } from '../src/modules/holds/holds.service';
-import { prisma } from '../src/lib/prisma';
+import { prisma } from '@ticket/domain';
 import { SeatStatus, HoldStatus } from '@ticket/shared';
-import { createShowFixture, createUser } from './helpers';
+import { createShowFixture, createUser } from '@ticket/domain/testing';
 
 /**
  * TTL / auto-release: a hold that outlives its TTL must free its seats. We drive

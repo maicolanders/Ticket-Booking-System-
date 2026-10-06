@@ -1,22 +1,15 @@
-import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma, bookingInclude, deliverTicket, generateQrDataUrl, type FullBooking } from '@ticket/domain';
 import { notFound, forbidden } from '../../lib/errors';
 import { toMoney } from '../../lib/money';
-import { generateQrDataUrl, generateQrBuffer } from '../../lib/qr';
-import { sendMail } from '../../lib/mailer';
-import { ticketEmailHtml } from '../../lib/emailTemplates';
+import { mailer } from '../../lib/mailer';
+import { logger } from '../../lib/logger';
+import { isProd } from '../../config/env';
 import type { BookingDTO } from '@ticket/shared';
 
 // Shared booking-loading, mapping, and email helpers. Kept free of waitlist
 // imports so both the bookings and waitlist modules can use them without a cycle.
 
-export const bookingInclude = {
-  seats: { include: { showSeat: { include: { venueSeat: true, seatCategory: true } } } },
-  show: { include: { event: true, venue: true } },
-  user: true,
-} satisfies Prisma.BookingInclude;
-
-export type FullBooking = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
+export { bookingInclude };
 
 export function toBookingDTO(b: FullBooking, qrDataUrl?: string): BookingDTO {
   return {
@@ -60,60 +53,16 @@ export async function getBookingByReference(reference: string, userId: string): 
   return toBookingDTO(b, qrDataUrl);
 }
 
-/** Render the QR ticket and email it to the customer (QR inline + attached PNG). */
-export async function sendTicketEmail(bookingId: string): Promise<void> {
-  const b = await prisma.booking.findUnique({ where: { id: bookingId }, include: bookingInclude });
-  if (!b) return;
-  const [qrDataUrl, qrBuffer] = await Promise.all([
-    generateQrDataUrl(b.qrToken),
-    generateQrBuffer(b.qrToken),
-  ]);
-  const html = ticketEmailHtml({
-    name: b.user.name,
-    reference: b.reference,
-    eventTitle: b.show.event.title,
-    venueName: b.show.venue.name,
-    startsAt: b.show.startsAt,
-    seats: b.seats.map((s) => ({
-      label: `${s.showSeat.venueSeat.rowLabel}${s.showSeat.venueSeat.colNumber}`,
-      category: s.showSeat.seatCategory.name,
-      price: toMoney(s.priceAtBooking),
-    })),
-    total: toMoney(b.totalAmount),
-    qrDataUrl,
-  });
-  await sendMail({
-    to: b.user.email,
-    subject: `Your ticket — ${b.show.event.title} (${b.reference})`,
-    html,
-    attachments: [{ filename: `${b.reference}.png`, content: qrBuffer }],
-  });
-}
-
-/** Map a show's per-category prices for quick lookup. */
-export async function priceMap(
-  tx: Prisma.TransactionClient,
-  showId: string,
-): Promise<Map<string, number>> {
-  const pricing = await tx.showPricing.findMany({ where: { showId } });
-  return new Map(pricing.map((p) => [p.seatCategoryId, toMoney(p.price)]));
-}
-
 /**
- * Retry a booking-creating transaction on the (rare) booking-reference unique
- * collision. The transaction rolls back fully on P2002, so a retry is safe.
+ * Email the QR ticket once (see deliverTicket). Outside production a mail outage
+ * is logged, not raised, so it never blocks a legacy booking.
  */
-export async function withReferenceRetry<T>(fn: () => Promise<T>, max = 3): Promise<T> {
-  let attempt = 0;
-  for (;;) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && attempt < max) {
-        attempt += 1;
-        continue;
-      }
-      throw e;
-    }
+export async function sendTicketEmail(bookingId: string): Promise<void> {
+  try {
+    await deliverTicket(bookingId, mailer);
+  } catch (err) {
+    logger.error('ticket.delivery.failed', { bookingId, err });
+    if (isProd) throw err;
   }
 }
+

@@ -3,7 +3,7 @@ import { registerSchema, loginSchema } from '@ticket/shared';
 import { validateBody } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
 import { asyncHandler } from '../../lib/asyncHandler';
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import * as authService from './auth.service';
 
 export const authRouter = Router();

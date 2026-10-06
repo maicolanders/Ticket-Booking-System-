@@ -1,100 +1,45 @@
-import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
-import { notFound, forbidden, conflict, gone } from '../../lib/errors';
-import { bookingReference } from '../../lib/ids';
-import { signTicketToken } from '../../lib/jwt';
+import {
+  prisma,
+  quoteSeats,
+  isHoldActive,
+  convertHoldToBooking,
+  cancelBooking as cancelConfirmedBooking,
+  TransientPaymentError,
+  type CreatedBooking,
+} from '@ticket/domain';
+import {
+  HttpError,
+  notFound,
+  forbidden,
+  conflict,
+  gone,
+  paymentRequired,
+  rethrowAsHttp,
+} from '../../lib/errors';
 import { emitSeatUpdate } from '../../realtime/io';
-import { SeatStatus, HoldStatus, BookingStatus, SocketEvents, type BookingDTO } from '@ticket/shared';
+import { SeatStatus, HoldStatus, SocketEvents, type BookingDTO } from '@ticket/shared';
 import {
   bookingInclude,
   toBookingDTO,
   getBookingDetail,
   getBookingByReference,
   sendTicketEmail,
-  priceMap,
-  withReferenceRetry,
 } from './bookings.shared';
 import { offerSeatsToWaitlist } from '../waitlist/waitlist.service';
-import { randomUUID } from 'node:crypto';
-import { chargePayment, refundPayment } from '../../lib/payments';
+import { CHECKOUT_OWNED_HOLD } from '../holds/holds.service';
+import { createHash } from 'node:crypto';
+import { paymentGateway } from '../../lib/payments';
 import { logger } from '../../lib/logger';
-import { toMoney } from '../../lib/money';
 
 export { getBookingDetail, getBookingByReference };
 
-interface LockedSeatRow {
-  id: string;
-  status: SeatStatus;
-  holdId: string | null;
-}
-
 /**
- * Convert an active hold into a confirmed booking. Runs in a transaction that
- * re-locks the held seats FOR UPDATE, so it can't race the TTL sweeper or a
- * concurrent booking. Returns the ids needed for the post-commit side effects.
+ * Deterministic per (hold, card): a repeated request replays the same charge instead
+ * of creating a second one, while retrying with a different card is a new attempt.
+ * The token is hashed so it never appears in provider logs.
  */
-async function confirmBookingTxn(userId: string, holdId: string) {
-  return prisma.$transaction(
-    async (tx) => {
-      const hold = await tx.hold.findUnique({
-        where: { id: holdId },
-        include: { seats: { select: { id: true } } },
-      });
-      if (!hold) throw notFound('Hold not found');
-      if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
-      if (hold.status !== HoldStatus.ACTIVE) throw conflict('This hold is no longer active');
-      if (hold.expiresAt.getTime() <= Date.now()) throw gone('Your seat hold has expired');
-
-      const seatIds = hold.seats.map((s) => s.id);
-      if (seatIds.length === 0) throw conflict('This hold has no seats');
-
-      // Pessimistic lock on the held seats — serializes against the sweeper.
-      const locked = await tx.$queryRaw<LockedSeatRow[]>(
-        Prisma.sql`SELECT "id", "status", "holdId" FROM "ShowSeat" WHERE "id" IN (${Prisma.join(
-          seatIds,
-        )}) FOR UPDATE`,
-      );
-      const stillHeld =
-        locked.length === seatIds.length &&
-        locked.every((s) => s.status === SeatStatus.HELD && s.holdId === holdId);
-      if (!stillHeld) {
-        throw gone('Your held seats are no longer valid — the hold may have expired');
-      }
-
-      const prices = await priceMap(tx, hold.showId);
-      const seatRows = await tx.showSeat.findMany({
-        where: { id: { in: seatIds } },
-        select: { id: true, seatCategoryId: true },
-      });
-      const bookingSeats = seatRows.map((s) => ({
-        showSeatId: s.id,
-        priceAtBooking: prices.get(s.seatCategoryId) ?? 0,
-      }));
-      const total = bookingSeats.reduce((sum, b) => sum + b.priceAtBooking, 0);
-
-      const reference = bookingReference();
-      const booking = await tx.booking.create({
-        data: {
-          reference,
-          showId: hold.showId,
-          userId,
-          status: BookingStatus.CONFIRMED,
-          totalAmount: total,
-          qrToken: signTicketToken(reference),
-          seats: { create: bookingSeats },
-        },
-      });
-      await tx.showSeat.updateMany({
-        where: { id: { in: seatIds } },
-        data: { status: SeatStatus.BOOKED, holdId: null },
-      });
-      await tx.hold.update({ where: { id: holdId }, data: { status: HoldStatus.CONVERTED } });
-
-      return { bookingId: booking.id, showId: hold.showId, seatIds };
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 10000, maxWait: 5000 },
-  );
-}
+const legacyChargeKey = (holdId: string, paymentToken: string) =>
+  `hold:${holdId}:charge:${createHash('sha256').update(paymentToken).digest('hex').slice(0, 16)}`;
 
 /** Confirm a booking from a hold, then emit + email the QR ticket. */
 export async function createBooking(
@@ -104,37 +49,66 @@ export async function createBooking(
 ): Promise<BookingDTO> {
   const hold = await prisma.hold.findUnique({
     where: { id: holdId },
-    include: { seats: { select: { seatCategoryId: true } } },
+    include: { seats: { select: { id: true } }, checkout: { select: { id: true } } },
   });
   if (!hold) throw notFound('Hold not found');
   if (hold.userId !== userId) throw forbidden('This hold does not belong to you');
+  if (hold.checkout) throw conflict(CHECKOUT_OWNED_HOLD);
   if (hold.status !== HoldStatus.ACTIVE) throw conflict('This hold is no longer active');
-  if (hold.expiresAt.getTime() <= Date.now()) throw gone('Your seat hold has expired');
+  if (!isHoldActive(hold)) throw gone('Your seat hold has expired');
 
-  const pricing = await prisma.showPricing.findMany({ where: { showId: hold.showId } });
-  const prices = new Map(pricing.map((price) => [price.seatCategoryId, toMoney(price.price)]));
-  const amount = hold.seats.reduce((sum, seat) => sum + (prices.get(seat.seatCategoryId) ?? 0), 0);
-  const idempotencyKey = randomUUID();
-  const charge = await chargePayment(
-    { amount: Math.round(amount * 100), currency: 'USD', paymentToken, metadata: { holdId } },
-    idempotencyKey,
+  const { totalMinor } = await quoteSeats(
+    prisma,
+    hold.showId,
+    hold.seats.map((seat) => seat.id),
   );
+  const idempotencyKey = legacyChargeKey(holdId, paymentToken);
+  const correlationId = `hold:${holdId}`;
+  const outcome = await paymentGateway
+    .charge({
+      idempotencyKey,
+      correlationId,
+      amountMinor: totalMinor,
+      currency: 'USD',
+      paymentToken,
+      metadata: { holdId },
+    })
+    .catch((error: unknown) => {
+      logger.error('payment.charge.failed', { holdId, correlationId, err: error });
+      throw error instanceof TransientPaymentError
+        ? new HttpError(503, 'The payment provider is unavailable, please retry')
+        : new HttpError(502, 'The payment provider rejected the request');
+    });
+  if (outcome.kind === 'declined') throw paymentRequired('Your payment was declined');
 
-  let result: Awaited<ReturnType<typeof confirmBookingTxn>>;
+  let booking: CreatedBooking;
   try {
-    result = await withReferenceRetry(() => confirmBookingTxn(userId, holdId));
+    booking = await convertHoldToBooking(holdId, { chargeId: outcome.chargeId, paymentKey: idempotencyKey });
   } catch (error) {
+    // A repeated or concurrent request reuses the same payment (same idempotency key).
+    // If that payment already bought a booking, this request is a replay: answer with
+    // that booking. Refunding here would take the money for a booking that stands.
+    const paid = await prisma.booking.findUnique({ where: { paymentKey: idempotencyKey } });
+    if (paid) return getBookingDetail(paid.id, userId);
     try {
-      await refundPayment(charge.id, `${idempotencyKey}:refund`);
+      await paymentGateway.refund({
+        idempotencyKey: `${idempotencyKey}:refund`,
+        correlationId,
+        chargeId: outcome.chargeId,
+      });
     } catch (refundError) {
-      logger.error('Failed to refund payment after booking failure:', refundError);
+      logger.error('payment.refund.failed', {
+        holdId,
+        correlationId,
+        chargeId: outcome.chargeId,
+        err: refundError,
+      });
     }
-    throw error;
+    return rethrowAsHttp(error);
   }
-  const { bookingId, showId, seatIds } = result;
-  emitSeatUpdate(SocketEvents.SEAT_BOOKED, showId, seatIds, SeatStatus.BOOKED);
-  await sendTicketEmail(bookingId);
-  return getBookingDetail(bookingId, userId);
+  emitSeatUpdate(SocketEvents.SEAT_BOOKED, booking.showId, booking.seatIds, SeatStatus.BOOKED);
+  await sendTicketEmail(booking.bookingId);
+  return getBookingDetail(booking.bookingId, userId);
 }
 
 /** A customer's booking history (summaries — no QR payload). */
@@ -153,42 +127,16 @@ export async function listBookings(userId: string): Promise<BookingDTO[]> {
  * the appropriate realtime updates per seat).
  */
 export async function cancelBooking(userId: string, bookingId: string): Promise<BookingDTO> {
-  const booking = await prisma.booking.findUnique({
-    where: { id: bookingId },
-    include: { seats: { select: { showSeatId: true } } },
-  });
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { userId: true } });
   if (!booking) throw notFound('Booking not found');
   if (booking.userId !== userId) throw forbidden('This booking does not belong to you');
-  if (booking.status !== BookingStatus.CONFIRMED) throw conflict('This booking is already cancelled');
 
-  const showSeatIds = booking.seats.map((s) => s.showSeatId);
-
-  await prisma.$transaction(
-    async (tx) => {
-      if (showSeatIds.length > 0) {
-        // Lock so freeing the seats can't race a concurrent hold on them.
-        await tx.$queryRaw(
-          Prisma.sql`SELECT "id" FROM "ShowSeat" WHERE "id" IN (${Prisma.join(
-            showSeatIds,
-          )}) FOR UPDATE`,
-        );
-        await tx.showSeat.updateMany({
-          where: { id: { in: showSeatIds } },
-          data: { status: SeatStatus.AVAILABLE, holdId: null },
-        });
-      }
-      await tx.booking.update({
-        where: { id: bookingId },
-        data: { status: BookingStatus.CANCELLED, cancelledAt: new Date() },
-      });
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 10000, maxWait: 5000 },
-  );
+  const { showId, seatIds } = await cancelConfirmedBooking(bookingId).catch(rethrowAsHttp);
 
   // Offer freed seats to waitlisted customers (per-seat FIFO). Emits realtime
   // SEAT_OFFERED for claimed seats and SEAT_RELEASED for the rest.
-  if (showSeatIds.length > 0) {
-    await offerSeatsToWaitlist(booking.showId, showSeatIds);
+  if (seatIds.length > 0) {
+    await offerSeatsToWaitlist(showId, seatIds);
   }
 
   return getBookingDetail(bookingId, userId);

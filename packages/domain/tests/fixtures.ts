@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
-import { prisma } from '../src/lib/prisma';
+import { prisma } from '../src/db/client';
 import type { Role } from '@ticket/shared';
 
 // Unique suffix generator so fixtures never collide across tests sharing one DB.

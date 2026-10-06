@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULTS, EventType, SeatStatus, type SeatMapSeatDTO } from '@ticket/shared';
-import { showsApi, waitlistApi } from '../api/endpoints';
-import type { CheckoutState, HeldSeatLine } from '../api/types';
+import { checkoutsApi, showsApi, waitlistApi } from '../api/endpoints';
+import type { CheckoutPageState, HeldSeatLine } from '../api/types';
 import { queryKeys } from '../lib/queryKeys';
 import { apiErrorMessage } from '../lib/api';
 import { formatDateTime, formatMoney } from '../lib/format';
@@ -78,25 +78,24 @@ export default function SeatSelection() {
   const total = selectedSeats.reduce((sum, s) => sum + s.price, 0);
 
   const holdMutation = useMutation({
-    mutationFn: () => showsApi.createHold(showId!, [...selectedIds]),
-    onSuccess: (hold) => {
+    mutationFn: () => checkoutsApi.start({ showId: showId!, seatIds: [...selectedIds] }),
+    onSuccess: ({ checkoutId }) => {
       const seats: HeldSeatLine[] = selectedSeats.map((s) => ({
         id: s.id,
         label: `${s.rowLabel}${s.colNumber}`,
         categoryName: s.categoryName,
         price: s.price,
       }));
-      const state: CheckoutState = {
-        hold,
+      const state: CheckoutPageState = {
         seats,
         show: {
           id: showId!,
           title: showQuery.data?.event.title ?? 'Show',
           venueName: showQuery.data?.venue.name ?? '',
-          startsAt: showQuery.data?.startsAt ?? hold.expiresAt,
+          startsAt: showQuery.data?.startsAt ?? '',
         },
       };
-      navigate('/checkout', { state });
+      navigate(`/checkout/${checkoutId}`, { state });
     },
     onError: (err) => {
       toast.error(apiErrorMessage(err, 'Those seats were just taken. Please pick again.'));

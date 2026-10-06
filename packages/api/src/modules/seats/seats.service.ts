@@ -1,4 +1,4 @@
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { notFound } from '../../lib/errors';
 import { toMoney } from '../../lib/money';
 import { releaseExpiredHolds } from '../holds/holds.service';

@@ -1,9 +1,11 @@
-import { api } from '../lib/api';
+import { api, checkoutClient } from '../lib/api';
 import type {
   AuthResponseDTO,
+  CheckoutStatusDTO,
+  StartCheckoutInput,
+  SubmitPaymentInput,
   AuthUserDTO,
   BookingDTO,
-  CreateBookingInput,
   CreateCategoryInput,
   CreateEventInput,
   CreateShowInput,
@@ -11,7 +13,6 @@ import type {
   EventFilterInput,
   EventSummaryDTO,
   GenerateSeatsInput,
-  HoldDTO,
   LoginInput,
   RegisterInput,
   SeatMapDTO,
@@ -55,23 +56,26 @@ export const eventsApi = {
 export const showsApi = {
   get: (id: string) => api.get<ShowDetail>(`/shows/${id}`).then((r) => r.data),
   seats: (id: string) => api.get<SeatMapDTO>(`/shows/${id}/seats`).then((r) => r.data),
-  createHold: (showId: string, seatIds: string[]) =>
-    api.post<HoldDTO>(`/shows/${showId}/holds`, { seatIds } satisfies { seatIds: string[] }).then((r) => r.data),
   joinWaitlist: (showId: string, seatCategoryId: string) =>
     api.post<WaitlistEntryDTO>(`/shows/${showId}/waitlist`, { seatCategoryId }).then((r) => r.data),
   myWaitlist: (showId: string) =>
     api.get<WaitlistEntryDTO[]>(`/shows/${showId}/waitlist/me`).then((r) => r.data),
 };
 
-export const holdsApi = {
-  release: (id: string) => api.delete(`/holds/${id}`).then(() => undefined),
+/** Checkout API: hold, pay and cancel run as a Durable Functions saga. */
+export const checkoutsApi = {
+  start: (input: StartCheckoutInput) =>
+    checkoutClient.post<{ checkoutId: string; statusUrl: string }>('/checkouts', input).then((r) => r.data),
+  status: (checkoutId: string) =>
+    checkoutClient.get<CheckoutStatusDTO>(`/checkouts/${checkoutId}`).then((r) => r.data),
+  pay: (checkoutId: string, paymentToken: string) =>
+    checkoutClient
+      .post(`/checkouts/${checkoutId}/payment`, { paymentToken } satisfies SubmitPaymentInput)
+      .then(() => undefined),
+  cancel: (checkoutId: string) => checkoutClient.post(`/checkouts/${checkoutId}/cancel`).then(() => undefined),
 };
 
 export const bookingsApi = {
-  create: (holdId: string) =>
-    api
-      .post<BookingDTO>('/bookings', { holdId, paymentToken: 'tok_ok' } satisfies CreateBookingInput)
-      .then((r) => r.data),
   list: () => api.get<BookingDTO[]>('/bookings').then((r) => r.data),
   get: (reference: string) => api.get<BookingDTO>(`/bookings/${reference}`).then((r) => r.data),
   cancel: (id: string) => api.post<BookingDTO>(`/bookings/${id}/cancel`).then((r) => r.data),

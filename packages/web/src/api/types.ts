@@ -1,4 +1,4 @@
-import type { EventType, HoldDTO } from '@ticket/shared';
+import type { EventType } from '@ticket/shared';
 
 /* ============================================================================
  * View models for API responses that aren't shared DTOs. Dates arrive as ISO
@@ -140,9 +140,11 @@ export interface HeldSeatLine {
   price: number;
 }
 
-/** Router state handed from seat selection to the checkout page. */
-export interface CheckoutState {
-  hold: HoldDTO;
+/**
+ * Router state handed from seat selection to the checkout page. Optional: the
+ * checkout itself is re-fetched by id, so a page refresh only loses these labels.
+ */
+export interface CheckoutPageState {
   seats: HeldSeatLine[];
   show: { id: string; title: string; venueName: string; startsAt: string };
 }

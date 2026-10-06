@@ -10,6 +10,7 @@ export const queryKeys = {
   myWaitlist: (showId: string) => ['waitlist-me', showId] as const,
   bookings: ['bookings'] as const,
   booking: (reference: string) => ['booking', reference] as const,
+  checkout: (checkoutId: string) => ['checkout', checkoutId] as const,
   offer: (token: string) => ['offer', token] as const,
   venues: ['venues'] as const,
   venue: (id: string) => ['venue', id] as const,

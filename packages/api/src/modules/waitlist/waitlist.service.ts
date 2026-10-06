@@ -1,15 +1,19 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import {
+  prisma,
+  offerToken,
+  runInTransaction,
+  inBookingTransaction,
+  createBooking,
+  lockSeats,
+  waitlistOfferEmailHtml,
+} from '@ticket/domain';
 import { env } from '../../config/env';
 import { badRequest, notFound, forbidden, conflict, gone } from '../../lib/errors';
-import { offerToken, bookingReference } from '../../lib/ids';
-import { signTicketToken } from '../../lib/jwt';
 import { sendMail } from '../../lib/mailer';
-import { waitlistOfferEmailHtml } from '../../lib/emailTemplates';
 import { emitSeatUpdate } from '../../realtime/io';
 import {
   SeatStatus,
-  BookingStatus,
   WaitlistStatus,
   OfferStatus,
   SocketEvents,
@@ -17,12 +21,7 @@ import {
   type WaitlistOfferDTO,
   type BookingDTO,
 } from '@ticket/shared';
-import {
-  priceMap,
-  sendTicketEmail,
-  getBookingDetail,
-  withReferenceRetry,
-} from '../bookings/bookings.shared';
+import { sendTicketEmail, getBookingDetail } from '../bookings/bookings.shared';
 
 const seatLabel = (rowLabel: string, colNumber: number) => `${rowLabel}${colNumber}`;
 
@@ -107,7 +106,10 @@ export async function getMyWaitlist(userId: string, showId: string): Promise<Wai
           ? {
               token: liveOffer.offerToken,
               expiresAt: liveOffer.expiresAt.toISOString(),
-              seatLabel: seatLabel(liveOffer.showSeat.venueSeat.rowLabel, liveOffer.showSeat.venueSeat.colNumber),
+              seatLabel: seatLabel(
+                liveOffer.showSeat.venueSeat.rowLabel,
+                liveOffer.showSeat.venueSeat.colNumber,
+              ),
             }
           : null,
       };
@@ -131,11 +133,7 @@ export async function leaveWaitlist(userId: string, entryId: string): Promise<vo
 }
 
 /** 1-based position of an entry among the WAITING entries for its show + category. */
-async function waitlistPosition(
-  showId: string,
-  seatCategoryId: string,
-  createdAt: Date,
-): Promise<number> {
+async function waitlistPosition(showId: string, seatCategoryId: string, createdAt: Date): Promise<number> {
   const ahead = await prisma.waitlistEntry.count({
     where: {
       showId,
@@ -182,64 +180,44 @@ export async function getOffer(userId: string, token: string): Promise<WaitlistO
   };
 }
 
-interface OfferedSeatRow {
-  id: string;
-  status: SeatStatus;
-  seatCategoryId: string;
-}
-
 /** Accept a time-limited offer → confirm a booking for the offered seat + email QR. */
 export async function acceptOffer(userId: string, token: string): Promise<BookingDTO> {
-  const { bookingId, showId, showSeatId } = await withReferenceRetry(() =>
-    prisma.$transaction(
-      async (tx) => {
-        const offer = await tx.waitlistOffer.findUnique({
-          where: { offerToken: token },
-          include: { waitlistEntry: true },
-        });
-        if (!offer) throw notFound('Offer not found');
-        if (offer.waitlistEntry.userId !== userId) throw forbidden('This offer does not belong to you');
-        if (offer.status !== OfferStatus.PENDING) throw conflict('This offer is no longer available');
-        if (offer.expiresAt.getTime() <= Date.now()) throw gone('This offer has expired');
+  const { bookingId, showId, showSeatId } = await inBookingTransaction(async (tx) => {
+    const offer = await tx.waitlistOffer.findUnique({
+      where: { offerToken: token },
+      include: { waitlistEntry: true },
+    });
+    if (!offer) throw notFound('Offer not found');
+    if (offer.waitlistEntry.userId !== userId) throw forbidden('This offer does not belong to you');
+    if (offer.status !== OfferStatus.PENDING) throw conflict('This offer is no longer available');
+    if (offer.expiresAt.getTime() <= Date.now()) throw gone('This offer has expired');
 
-        // Lock the offered seat — guards against the sweeper expiring it concurrently.
-        const locked = await tx.$queryRaw<OfferedSeatRow[]>(
-          Prisma.sql`SELECT "id", "status", "seatCategoryId" FROM "ShowSeat" WHERE "id" = ${offer.showSeatId} FOR UPDATE`,
-        );
-        const seat = locked[0];
-        if (!seat || seat.status !== SeatStatus.HELD) {
-          throw gone('The offered seat is no longer available');
-        }
+    // Lock the offered seat — guards against the sweeper expiring it concurrently.
+    const [seat] = await lockSeats(tx, [offer.showSeatId]);
+    if (!seat || seat.status !== SeatStatus.HELD) {
+      throw gone('The offered seat is no longer available');
+    }
 
-        const prices = await priceMap(tx, offer.waitlistEntry.showId);
-        const price = prices.get(seat.seatCategoryId) ?? 0;
-        const reference = bookingReference();
-        const booking = await tx.booking.create({
-          data: {
-            reference,
-            showId: offer.waitlistEntry.showId,
-            userId,
-            status: BookingStatus.CONFIRMED,
-            totalAmount: price,
-            qrToken: signTicketToken(reference),
-            seats: { create: [{ showSeatId: offer.showSeatId, priceAtBooking: price }] },
-          },
-        });
-        await tx.showSeat.update({
-          where: { id: offer.showSeatId },
-          data: { status: SeatStatus.BOOKED, holdId: null },
-        });
-        await tx.waitlistOffer.update({ where: { id: offer.id }, data: { status: OfferStatus.ACCEPTED } });
-        await tx.waitlistEntry.update({
-          where: { id: offer.waitlistEntryId },
-          data: { status: WaitlistStatus.CONVERTED },
-        });
+    const booking = await createBooking(tx, {
+      userId,
+      showId: offer.waitlistEntry.showId,
+      seatIds: [offer.showSeatId],
+    });
+    await tx.waitlistOffer.update({
+      where: { id: offer.id },
+      data: { status: OfferStatus.ACCEPTED },
+    });
+    await tx.waitlistEntry.update({
+      where: { id: offer.waitlistEntryId },
+      data: { status: WaitlistStatus.CONVERTED },
+    });
 
-        return { bookingId: booking.id, showId: offer.waitlistEntry.showId, showSeatId: offer.showSeatId };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 10000, maxWait: 5000 },
-    ),
-  );
+    return {
+      bookingId: booking.bookingId,
+      showId: offer.waitlistEntry.showId,
+      showSeatId: offer.showSeatId,
+    };
+  });
 
   emitSeatUpdate(SocketEvents.SEAT_BOOKED, showId, [showSeatId], SeatStatus.BOOKED);
   await sendTicketEmail(bookingId);
@@ -261,80 +239,77 @@ interface OfferResult {
  * is released (AVAILABLE). Emits the matching realtime event.
  */
 async function offerSeatToNextInLine(showId: string, showSeatId: string): Promise<OfferResult> {
-  const result = await prisma.$transaction(
-    async (tx) => {
-      const locked = await tx.$queryRaw<OfferedSeatRow[]>(
-        Prisma.sql`SELECT "id", "status", "seatCategoryId" FROM "ShowSeat" WHERE "id" = ${showSeatId} FOR UPDATE`,
-      );
-      const seat = locked[0];
-      // Someone grabbed the seat in the race window — leave it be.
-      if (!seat || seat.status !== SeatStatus.AVAILABLE) return { outcome: 'taken' as const };
+  const result = await runInTransaction(async (tx) => {
+    const [seat] = await lockSeats(tx, [showSeatId]);
+    // Someone grabbed the seat in the race window — leave it be.
+    if (!seat || seat.status !== SeatStatus.AVAILABLE) return { outcome: 'taken' as const };
 
-      // Next waiting entry for this category, FIFO. SKIP LOCKED avoids two
-      // concurrent offer flows handing the same entry two seats.
-      const candidates = await tx.$queryRaw<{ id: string }[]>(
-        Prisma.sql`SELECT "id" FROM "WaitlistEntry"
+    // Next waiting entry for this category, FIFO. SKIP LOCKED avoids two
+    // concurrent offer flows handing the same entry two seats.
+    const candidates = await tx.$queryRaw<{ id: string }[]>(
+      Prisma.sql`SELECT "id" FROM "WaitlistEntry"
                    WHERE "showId" = ${showId}
                      AND "seatCategoryId" = ${seat.seatCategoryId}
                      AND "status" = 'WAITING'
                    ORDER BY "createdAt" ASC
                    FOR UPDATE SKIP LOCKED
                    LIMIT 1`,
-      );
-      if (candidates.length === 0) {
-        // Nobody waiting → the seat is genuinely free again.
-        await tx.showSeat.update({
-          where: { id: showSeatId },
-          data: { status: SeatStatus.AVAILABLE, holdId: null },
-        });
-        return { outcome: 'released' as const };
-      }
-
-      const entryId = candidates[0].id;
-      const token = offerToken();
-      const expiresAt = new Date(Date.now() + env.WAITLIST_OFFER_TTL_SECONDS * 1000);
-      await tx.waitlistOffer.create({
-        data: {
-          waitlistEntryId: entryId,
-          showSeatId,
-          offerToken: token,
-          status: OfferStatus.PENDING,
-          expiresAt,
-        },
-      });
-      await tx.waitlistEntry.update({ where: { id: entryId }, data: { status: WaitlistStatus.OFFERED } });
-      // Reserve the seat for the offeree (HELD, but not tied to a checkout Hold).
+    );
+    if (candidates.length === 0) {
+      // Nobody waiting → the seat is genuinely free again.
       await tx.showSeat.update({
         where: { id: showSeatId },
-        data: { status: SeatStatus.HELD, holdId: null },
+        data: { status: SeatStatus.AVAILABLE, holdId: null },
       });
+      return { outcome: 'released' as const };
+    }
 
-      const details = await tx.waitlistEntry.findUnique({
-        where: { id: entryId },
-        include: {
-          user: { select: { name: true, email: true } },
-          seatCategory: { select: { name: true } },
-          show: { include: { event: { select: { title: true } } } },
-        },
-      });
-      const seatRow = await tx.showSeat.findUnique({
-        where: { id: showSeatId },
-        include: { venueSeat: true },
-      });
-
-      return {
-        outcome: 'offered' as const,
-        token,
+    const entryId = candidates[0].id;
+    const token = offerToken();
+    const expiresAt = new Date(Date.now() + env.WAITLIST_OFFER_TTL_SECONDS * 1000);
+    await tx.waitlistOffer.create({
+      data: {
+        waitlistEntryId: entryId,
+        showSeatId,
+        offerToken: token,
+        status: OfferStatus.PENDING,
         expiresAt,
-        email: details!.user.email,
-        name: details!.user.name,
-        eventTitle: details!.show.event.title,
-        categoryName: details!.seatCategory.name,
-        seatLabel: seatLabel(seatRow!.venueSeat.rowLabel, seatRow!.venueSeat.colNumber),
-      };
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 10000, maxWait: 5000 },
-  );
+      },
+    });
+    await tx.waitlistEntry.update({
+      where: { id: entryId },
+      data: { status: WaitlistStatus.OFFERED },
+    });
+    // Reserve the seat for the offeree (HELD, but not tied to a checkout Hold).
+    await tx.showSeat.update({
+      where: { id: showSeatId },
+      data: { status: SeatStatus.HELD, holdId: null },
+    });
+
+    const details = await tx.waitlistEntry.findUnique({
+      where: { id: entryId },
+      include: {
+        user: { select: { name: true, email: true } },
+        seatCategory: { select: { name: true } },
+        show: { include: { event: { select: { title: true } } } },
+      },
+    });
+    const seatRow = await tx.showSeat.findUnique({
+      where: { id: showSeatId },
+      include: { venueSeat: true },
+    });
+
+    return {
+      outcome: 'offered' as const,
+      token,
+      expiresAt,
+      email: details!.user.email,
+      name: details!.user.name,
+      eventTitle: details!.show.event.title,
+      categoryName: details!.seatCategory.name,
+      seatLabel: seatLabel(seatRow!.venueSeat.rowLabel, seatRow!.venueSeat.colNumber),
+    };
+  });
 
   if (result.outcome === 'offered') {
     const offerUrl = `${env.APP_BASE_URL}/waitlist/offer/${result.token}`;
@@ -377,24 +352,24 @@ export async function processExpiredOffers(): Promise<number> {
   });
 
   for (const offer of expired) {
-    await prisma.$transaction(
-      async (tx) => {
-        // Re-check under nothing-fancy: skip if it was accepted meanwhile.
-        const fresh = await tx.waitlistOffer.findUnique({ where: { id: offer.id } });
-        if (!fresh || fresh.status !== OfferStatus.PENDING) return;
-        await tx.waitlistOffer.update({ where: { id: offer.id }, data: { status: OfferStatus.EXPIRED } });
-        await tx.waitlistEntry.update({
-          where: { id: offer.waitlistEntryId },
-          data: { status: WaitlistStatus.EXPIRED },
-        });
-        // Free the seat it was holding (only if still HELD by this offer).
-        await tx.showSeat.updateMany({
-          where: { id: offer.showSeatId, status: SeatStatus.HELD },
-          data: { status: SeatStatus.AVAILABLE, holdId: null },
-        });
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
-    );
+    await runInTransaction(async (tx) => {
+      // Re-check under nothing-fancy: skip if it was accepted meanwhile.
+      const fresh = await tx.waitlistOffer.findUnique({ where: { id: offer.id } });
+      if (!fresh || fresh.status !== OfferStatus.PENDING) return;
+      await tx.waitlistOffer.update({
+        where: { id: offer.id },
+        data: { status: OfferStatus.EXPIRED },
+      });
+      await tx.waitlistEntry.update({
+        where: { id: offer.waitlistEntryId },
+        data: { status: WaitlistStatus.EXPIRED },
+      });
+      // Free the seat it was holding (only if still HELD by this offer).
+      await tx.showSeat.updateMany({
+        where: { id: offer.showSeatId, status: SeatStatus.HELD },
+        data: { status: SeatStatus.AVAILABLE, holdId: null },
+      });
+    });
     // Re-offer to the next in line (or release + emit).
     await offerSeatToNextInLine(offer.showSeat.showId, offer.showSeatId);
   }

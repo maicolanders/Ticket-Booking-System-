@@ -1,4 +1,4 @@
-import { prisma } from '../../lib/prisma';
+import { prisma } from '@ticket/domain';
 import { badRequest, notFound, forbidden } from '../../lib/errors';
 import { toMoney } from '../../lib/money';
 import { SeatStatus, type CreateShowInput } from '@ticket/shared';

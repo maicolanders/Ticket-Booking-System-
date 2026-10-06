@@ -1,4 +1,4 @@
-interface TicketEmailData {
+export interface TicketEmailData {
   name: string;
   reference: string;
   eventTitle: string;
@@ -9,7 +9,7 @@ interface TicketEmailData {
   qrDataUrl: string;
 }
 
-interface WaitlistOfferEmailData {
+export interface WaitlistOfferEmailData {
   name: string;
   eventTitle: string;
   categoryName: string;

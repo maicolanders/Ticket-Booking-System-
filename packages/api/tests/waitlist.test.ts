@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Stub the mailer so tests never touch the network (no Ethereal account creation,
-// no Resend call). Both bookings and waitlist import sendMail from this module.
-vi.mock('../src/lib/mailer', () => ({ sendMail: vi.fn(async () => {}) }));
+// no Resend call). Ticket delivery uses `mailer`; waitlist offers use `sendMail`.
+vi.mock('../src/lib/mailer', () => ({
+  sendMail: vi.fn(async () => {}),
+  mailer: { send: vi.fn(async () => {}) },
+}));
 
 import { createHold } from '../src/modules/holds/holds.service';
 import { createBooking, cancelBooking } from '../src/modules/bookings/bookings.service';
@@ -11,9 +14,9 @@ import {
   acceptOffer,
   processExpiredOffers,
 } from '../src/modules/waitlist/waitlist.service';
-import { prisma } from '../src/lib/prisma';
+import { prisma } from '@ticket/domain';
 import { SeatStatus, WaitlistStatus, OfferStatus, BookingStatus } from '@ticket/shared';
-import { createShowFixture, createUser } from './helpers';
+import { createShowFixture, createUser } from '@ticket/domain/testing';
 
 /** Book every seat of a fixture (sells the single category out). */
 async function bookAllSeats(userId: string, showId: string, seatIds: string[]) {

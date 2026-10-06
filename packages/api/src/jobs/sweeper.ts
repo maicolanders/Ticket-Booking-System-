@@ -20,10 +20,10 @@ async function sweep(): Promise<void> {
   try {
     const [holds, offers] = await Promise.all([releaseExpiredHolds(), processExpiredOffers()]);
     if (holds > 0 || offers > 0) {
-      logger.info(`Sweeper: released ${holds} expired hold(s), processed ${offers} expired offer(s)`);
+      logger.info('sweeper.swept', { releasedHolds: holds, expiredOffers: offers });
     }
   } catch (err) {
-    logger.error('Sweeper run failed:', err);
+    logger.error('sweeper.failed', { err });
   } finally {
     running = false;
   }
@@ -33,7 +33,7 @@ async function sweep(): Promise<void> {
 export function startSweeper(): () => void {
   timer = setInterval(() => void sweep(), env.SWEEP_INTERVAL_SECONDS * 1000);
   timer.unref?.(); // don't keep the process alive solely for the sweeper
-  logger.info(`Sweeper started (every ${env.SWEEP_INTERVAL_SECONDS}s)`);
+  logger.info('sweeper.started', { intervalSeconds: env.SWEEP_INTERVAL_SECONDS });
   // Run one pass shortly after boot to clear anything left over from a restart.
   setTimeout(() => void sweep(), 1000).unref?.();
   return stopSweeper;
