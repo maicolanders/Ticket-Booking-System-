@@ -162,7 +162,10 @@ export function beginCheckoutPayment(
     const { hold } = await lockHold(tx, checkout.holdId);
     if (isHoldActive(hold, await dbNow(tx))) {
       await tx.hold.update({ where: { id: hold.id }, data: { status: HoldStatus.CAPTURING } });
-      return { checkout: await transition(tx, checkout, CheckoutStatus.PROCESSING_PAYMENT), outcome: 'processing' };
+      return {
+        checkout: await transition(tx, checkout, CheckoutStatus.PROCESSING_PAYMENT),
+        outcome: 'processing',
+      };
     }
     await endHoldTx(tx, hold.id, [HoldStatus.ACTIVE], HoldStatus.EXPIRED);
     return { checkout: await transition(tx, checkout, CheckoutStatus.EXPIRED), outcome: 'expired' };
@@ -230,7 +233,11 @@ type ReleaseStatus =
  * End a checkout without a booking: free its seats (whether the hold is ACTIVE or
  * CAPTURING) and record the terminal status. A no-op on a terminal checkout.
  */
-export function releaseCheckout(checkoutId: string, to: ReleaseStatus, failureReason?: string): Promise<Checkout> {
+export function releaseCheckout(
+  checkoutId: string,
+  to: ReleaseStatus,
+  failureReason?: string,
+): Promise<Checkout> {
   return runInTransaction(async (tx) => {
     const checkout = await lockCheckout(tx, checkoutId);
     if (isTerminal(checkout.status)) return checkout;
@@ -274,6 +281,21 @@ export function requestCheckoutCancel(checkoutId: string, userId: string): Promi
       await tx.checkout.update({ where: { id: checkoutId }, data: { cancelRequestedAt: new Date() } });
     }
     return 'accepted';
+  });
+}
+
+/**
+ * Cancel a checkout that is still awaiting payment, without its orchestration: the
+ * fallback when a recorded cancellation cannot be delivered (lost instance, scheduler
+ * unreachable). Only AWAITING_PAYMENT qualifies: no charge can exist yet, and a live
+ * orchestration that wakes up later finds the checkout terminal and stops.
+ */
+export function cancelUnpaidCheckout(checkoutId: string): Promise<Checkout> {
+  return runInTransaction(async (tx) => {
+    const checkout = await lockCheckout(tx, checkoutId);
+    if (checkout.status !== CheckoutStatus.AWAITING_PAYMENT) return checkout;
+    if (checkout.holdId) await endHoldTx(tx, checkout.holdId, [HoldStatus.ACTIVE], HoldStatus.RELEASED);
+    return transition(tx, checkout, CheckoutStatus.CANCELLED);
   });
 }
 

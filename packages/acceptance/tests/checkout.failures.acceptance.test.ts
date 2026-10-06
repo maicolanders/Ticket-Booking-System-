@@ -208,3 +208,41 @@ describe('payment failures', () => {
     expect(await seatStatus(seatId)).toBe('AVAILABLE');
   });
 });
+
+describe('lost orchestration', () => {
+  // A checkout row awaiting payment with no instance behind it, as after a scheduler restart.
+  async function orphanCheckout(): Promise<string> {
+    const template = await start();
+    await waitFor(template, ['AWAITING_PAYMENT']);
+    expect((await post(template, 'cancel')).status).toBe(202);
+    await waitFor(template, ['CANCELLED']);
+    const orphan = randomUUID();
+    await pool.query(
+      `INSERT INTO "Checkout" (id, "correlationId", "userId", "showId", "seatIds", status, "holdExpiresAt", "amountDue", "updatedAt")
+       SELECT $1, $2, "userId", "showId", '{}', 'AWAITING_PAYMENT', now() + interval '5 minutes', "amountDue", now()
+       FROM "Checkout" WHERE id = $3`,
+      [orphan, randomUUID(), template],
+    );
+    return orphan;
+  }
+
+  it('refuses payment with 409, charges nothing and closes the checkout as FAILED', async () => {
+    const checkoutId = await orphanCheckout();
+
+    const response = await post(checkoutId, 'payment', { paymentToken: 'tok_ok' });
+
+    expect(response.status).toBe(409);
+    const final = await status(checkoutId);
+    expect(final.status).toBe('FAILED');
+    expect(final.failureReason).toContain('no charge was made');
+    expect((await netCharges(checkoutId)).charges).toHaveLength(0);
+  });
+
+  it('still cancels a checkout awaiting payment', async () => {
+    const checkoutId = await orphanCheckout();
+
+    expect((await post(checkoutId, 'cancel')).status).toBe(202);
+
+    expect((await status(checkoutId)).status).toBe('CANCELLED');
+  });
+});

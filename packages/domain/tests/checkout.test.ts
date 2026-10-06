@@ -4,6 +4,7 @@ import { CheckoutStatus, HoldStatus, SeatStatus } from '@ticket/shared';
 import { prisma } from '../src/db/client';
 import {
   beginCheckoutPayment,
+  cancelUnpaidCheckout,
   completeCheckout,
   confirmCheckoutBooking,
   createCheckout,
@@ -163,6 +164,31 @@ describe('ending a checkout without a booking', () => {
     const failed = await failCheckout(checkoutId, 'payment outcome unknown');
 
     expect(failed).toMatchObject({ status: CheckoutStatus.FAILED, failureReason: 'payment outcome unknown' });
+    expect(await seats(seatIds)).toEqual([SeatStatus.HELD]);
+  });
+});
+
+describe('cancelling without the orchestration', () => {
+  it('cancels a checkout awaiting payment and frees its seats, once', async () => {
+    const { checkoutId, seatIds } = await newCheckout({ seats: 2 });
+    await holdCheckoutSeats(checkoutId, TTL);
+
+    const cancelled = await cancelUnpaidCheckout(checkoutId);
+    const repeat = await cancelUnpaidCheckout(checkoutId);
+
+    expect(cancelled.status).toBe(CheckoutStatus.CANCELLED);
+    expect(repeat.status).toBe(CheckoutStatus.CANCELLED);
+    expect(await seats(seatIds)).toEqual([SeatStatus.AVAILABLE, SeatStatus.AVAILABLE]);
+  });
+
+  it('leaves a checkout alone once payment is in flight', async () => {
+    const { checkoutId, seatIds } = await newCheckout({ seats: 1 });
+    await holdCheckoutSeats(checkoutId, TTL);
+    await beginCheckoutPayment(checkoutId);
+
+    const untouched = await cancelUnpaidCheckout(checkoutId);
+
+    expect(untouched.status).toBe(CheckoutStatus.PROCESSING_PAYMENT);
     expect(await seats(seatIds)).toEqual([SeatStatus.HELD]);
   });
 });

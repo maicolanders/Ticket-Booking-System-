@@ -4,6 +4,7 @@ import * as df from 'durable-functions';
 import { CheckoutStatus, startCheckoutSchema, submitPaymentSchema } from '@ticket/shared';
 import {
   DomainError,
+  cancelUnpaidCheckout,
   createCheckout,
   failCheckout,
   getCheckout,
@@ -18,7 +19,8 @@ import { CHECKOUT_ORCHESTRATOR, Events, type CheckoutRef, type PaymentSubmitted 
 // the system of record, never from orchestration state.
 
 const json = (status: number, body?: unknown): HttpResponseInit => ({ status, jsonBody: body });
-const error = (status: number, message: string, details?: unknown) => json(status, { error: message, details });
+const error = (status: number, message: string, details?: unknown) =>
+  json(status, { error: message, details });
 
 /** The caller's user id from the legacy API's JWT, or null. */
 function authenticate(request: HttpRequest): string | null {
@@ -44,6 +46,10 @@ async function ownedCheckout(checkoutId: string, userId: string) {
   const checkout = await getCheckout(checkoutId);
   return checkout && checkout.userId === userId ? checkout : null;
 }
+
+/** raiseEvent's failure when the scheduler has no such instance (e.g. the in-memory emulator restarted). */
+const isInstanceMissing = (err: unknown): boolean =>
+  err instanceof Error && /No instance with ID/i.test(err.message);
 
 async function startCheckout(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   const userId = authenticate(request);
@@ -93,9 +99,22 @@ async function submitPayment(request: HttpRequest, context: InvocationContext): 
   // No database write here: the orchestration consumes only the first payment event
   // and ignores the rest, and the charge's idempotency key is fixed per checkout.
   // Repeated or concurrent calls therefore cannot cause a second charge.
+  const log = logger.child({ checkoutId: checkout.id, correlationId: checkout.correlationId });
   const event: PaymentSubmitted = { paymentToken: body.data.paymentToken };
-  await df.getClient(context).raiseEvent(checkout.id, Events.paymentSubmitted, event);
-  logger.info('checkout.payment.submitted', { checkoutId: checkout.id, correlationId: checkout.correlationId });
+  try {
+    await df.getClient(context).raiseEvent(checkout.id, Events.paymentSubmitted, event);
+  } catch (err) {
+    log.error('checkout.payment.event_not_delivered', { err });
+    // The scheduler may be briefly unreachable: nothing was charged, the client can retry.
+    if (!isInstanceMissing(err)) return error(503, 'Payment could not be submitted, please retry');
+    // No orchestration will ever take this payment. Nothing was charged, so close the
+    // checkout and free its seats instead of leaving the customer waiting on it.
+    const failed = await failCheckout(checkout.id, 'orchestration lost before payment; no charge was made', {
+      releaseSeats: true,
+    });
+    return error(409, `Checkout is not payable (status ${failed.status})`);
+  }
+  log.info('checkout.payment.submitted');
   return json(202);
 }
 
@@ -114,7 +133,10 @@ async function cancelCheckout(request: HttpRequest, context: InvocationContext):
   try {
     await df.getClient(context).raiseEvent(checkoutId, Events.cancelRequested, {});
   } catch (err) {
-    log.warn('checkout.cancel.event_not_delivered', { err });
+    // Without the event an unpaid checkout would wait for its hold timer, or forever if
+    // the instance is gone, so cancel it here. During payment the recorded request is enough.
+    const cancelled = await cancelUnpaidCheckout(checkoutId);
+    log.warn('checkout.cancel.event_not_delivered', { err, status: cancelled.status });
   }
   log.info('checkout.cancel.requested');
   return json(202);
