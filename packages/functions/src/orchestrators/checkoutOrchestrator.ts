@@ -33,14 +33,25 @@ const TICKET_REDELIVERY_DELAY_MS = 5 * 60_000;
  *                 charged  ─▶ book ─▶ ticket ─▶ CONFIRMED
  *                              └ not booked ─▶ refund ─▶ release CANCELLED | REFUNDED
  *
- * Anything whose money outcome cannot be settled ends FAILED for an operator.
+ * Anything whose money outcome cannot be settled ends FAILED for an operator, and so
+ * does any other step that exhausts its retries: a checkout never stays non-terminal
+ * behind a dead orchestration.
  */
-export function* checkoutOrchestrator(context: OrchestrationContext): Generator<Task, CheckoutStatus, unknown> {
+export function* checkoutOrchestrator(
+  context: OrchestrationContext,
+): Generator<Task, CheckoutStatus, unknown> {
   const ref = context.df.getInput() as CheckoutRef;
   const log = (event: string, fields: LogFields = {}) => {
     if (!context.df.isReplaying) logger.info(event, { ...ref, instanceId: context.df.instanceId, ...fields });
   };
-  const report = (status: CheckoutStatus, step: string) => context.df.setCustomStatus({ status, step, ...ref });
+  let step = 'starting';
+  // Once a charge has been attempted, giving up must keep the seats: they may be paid for.
+  let chargeAttempted = false;
+  let failing = false;
+  const report = (status: CheckoutStatus, at: string) => {
+    step = at;
+    context.df.setCustomStatus({ status, step, ...ref });
+  };
 
   function* call<T>(name: string, retry: RetryOptions, input: object = {}): Generator<Task, T, unknown> {
     return (yield context.df.callActivityWithRetry(name, retry, { ...ref, ...input })) as T;
@@ -58,84 +69,121 @@ export function* checkoutOrchestrator(context: OrchestrationContext): Generator<
   }
 
   function* fail(reason: string, releaseSeats: boolean): Generator<Task, CheckoutStatus, unknown> {
-    const final = yield* call<CheckoutStatus>(Activities.fail, RetryPolicies.database, { reason, releaseSeats });
+    failing = true;
+    const final = yield* call<CheckoutStatus>(Activities.fail, RetryPolicies.database, {
+      reason,
+      releaseSeats,
+    });
     return yield* end(final);
   }
 
-  log('checkout.orchestration.started');
-  report(CheckoutStatus.PENDING, 'holding seats');
-  const held = yield* call<CheckoutState>(Activities.holdSeats, RetryPolicies.database);
-  if (held.status !== CheckoutStatus.AWAITING_PAYMENT || !held.holdExpiresAt) return yield* end(held.status);
-
-  // Wait for whichever comes first. Events raised early (even before the hold) are buffered.
-  report(CheckoutStatus.AWAITING_PAYMENT, 'awaiting payment');
-  const holdTimer = context.df.createTimer(new Date(held.holdExpiresAt));
-  const payment = context.df.waitForExternalEvent(Events.paymentSubmitted);
-  const cancel = context.df.waitForExternalEvent(Events.cancelRequested);
-  const first = yield context.df.Task.any([holdTimer, payment, cancel]);
-  if (first !== holdTimer) holdTimer.cancel();
-  if (first === holdTimer) return yield* release(CheckoutStatus.EXPIRED);
-  if (first === cancel) return yield* release(CheckoutStatus.CANCELLED);
-
-  const { paymentToken } = payment.result as PaymentSubmitted;
-  report(CheckoutStatus.PROCESSING_PAYMENT, 'beginning payment');
-  const begun = yield* call<BeginPaymentResult>(Activities.beginPayment, RetryPolicies.database);
-  if (begun === 'expired') return yield* end(CheckoutStatus.EXPIRED);
-  if (begun === 'not_payable') return yield* fail('checkout was not payable when payment began', false);
-
-  report(CheckoutStatus.PROCESSING_PAYMENT, 'charging');
-  let charge: ChargeResult;
   try {
-    charge = yield* call<ChargeResult>(Activities.charge, RetryPolicies.payment, { paymentToken });
-  } catch {
-    // Retries exhausted on transient failures: the charge may or may not exist. Keep the seats.
-    return yield* fail('payment outcome unknown after retries; reconcile with the provider by idempotency key', false);
+    return yield* saga();
+  } catch (err) {
+    // A step with no handling of its own ran out of retries. If recording FAILED is
+    // what failed, there is nothing left to try: the orchestration fails (see RUNBOOK).
+    if (failing) throw err;
+    if (!context.df.isReplaying) logger.error('checkout.orchestration.step_failed', { ...ref, step, err });
+    return yield* fail(
+      chargeAttempted
+        ? `checkout stopped while ${step} after a charge was attempted; reconcile with the provider and the booking`
+        : `checkout stopped while ${step}; no charge was attempted`,
+      !chargeAttempted,
+    );
   }
-  if (charge.kind === 'declined') return yield* release(CheckoutStatus.PAYMENT_DECLINED, charge.reason);
-  if (charge.kind === 'rejected') return yield* fail(`payment rejected by provider: ${charge.code}`, true);
 
-  report(CheckoutStatus.PROCESSING_PAYMENT, 'booking');
-  let booked: ConfirmResult;
-  try {
-    booked = yield* call<ConfirmResult>(Activities.confirmBooking, RetryPolicies.database, {
-      chargeId: charge.chargeId,
-    });
-  } catch {
-    // Retries exhausted: an earlier attempt may still have committed the booking, so
-    // neither refunding nor releasing is safe. Money and seats stay put for an operator.
-    return yield* fail(`booking outcome unknown after payment (charge ${charge.chargeId}); reconcile`, false);
-  }
-  if (booked.outcome !== 'booked') {
-    // Compensation: this checkout's own charge (unique key) is refunded before the seats go back.
-    report(CheckoutStatus.PROCESSING_PAYMENT, 'refunding');
-    let refund: RefundResult;
+  function* saga(): Generator<Task, CheckoutStatus, unknown> {
+    log('checkout.orchestration.started');
+    report(CheckoutStatus.PENDING, 'holding seats');
+    const held = yield* call<CheckoutState>(Activities.holdSeats, RetryPolicies.database);
+    if (held.status !== CheckoutStatus.AWAITING_PAYMENT || !held.holdExpiresAt)
+      return yield* end(held.status);
+
+    // Wait for whichever comes first. Events raised early (even before the hold) are buffered.
+    report(CheckoutStatus.AWAITING_PAYMENT, 'awaiting payment');
+    const holdTimer = context.df.createTimer(new Date(held.holdExpiresAt));
+    const payment = context.df.waitForExternalEvent(Events.paymentSubmitted);
+    const cancel = context.df.waitForExternalEvent(Events.cancelRequested);
+    const first = yield context.df.Task.any([holdTimer, payment, cancel]);
+    if (first !== holdTimer) holdTimer.cancel();
+    if (first === holdTimer) return yield* release(CheckoutStatus.EXPIRED);
+    if (first === cancel) return yield* release(CheckoutStatus.CANCELLED);
+
+    const { paymentToken } = payment.result as PaymentSubmitted;
+    report(CheckoutStatus.PROCESSING_PAYMENT, 'beginning payment');
+    const begun = yield* call<BeginPaymentResult>(Activities.beginPayment, RetryPolicies.database);
+    if (begun === 'expired') return yield* end(CheckoutStatus.EXPIRED);
+    if (begun === 'not_payable') return yield* fail('checkout was not payable when payment began', false);
+
+    report(CheckoutStatus.PROCESSING_PAYMENT, 'charging');
+    chargeAttempted = true;
+    let charge: ChargeResult;
     try {
-      refund = yield* call<RefundResult>(Activities.refund, RetryPolicies.payment, { chargeId: charge.chargeId });
+      charge = yield* call<ChargeResult>(Activities.charge, RetryPolicies.payment, { paymentToken });
     } catch {
-      refund = { kind: 'rejected', code: 'retries_exhausted' };
+      // Retries exhausted on transient failures: the charge may or may not exist. Keep the seats.
+      return yield* fail(
+        'payment outcome unknown after retries; reconcile with the provider by idempotency key',
+        false,
+      );
     }
-    if (refund.kind === 'rejected') {
-      return yield* fail(`refund of charge ${charge.chargeId} failed (${refund.code}); refund manually`, false);
-    }
-    return booked.outcome === 'cancel_requested'
-      ? yield* release(CheckoutStatus.CANCELLED, 'cancelled by customer during payment; charge refunded')
-      : yield* release(CheckoutStatus.REFUNDED, 'seats could not be booked after payment; charge refunded');
-  }
+    if (charge.kind === 'declined') return yield* release(CheckoutStatus.PAYMENT_DECLINED, charge.reason);
+    if (charge.kind === 'rejected') return yield* fail(`payment rejected by provider: ${charge.code}`, true);
 
-  // Booked. Publish CONFIRMED once the ticket is out; if mail is down, confirm anyway
-  // and keep redelivering on durable timers — the booking already stands.
-  report(CheckoutStatus.PROCESSING_PAYMENT, 'sending ticket');
-  let delivered = yield* tryDeliverTicket();
-  yield* call<CheckoutStatus>(Activities.complete, RetryPolicies.database);
-  for (let round = 1; !delivered && round <= TICKET_REDELIVERY_ROUNDS; round += 1) {
-    report(CheckoutStatus.CONFIRMED, `ticket redelivery ${round}/${TICKET_REDELIVERY_ROUNDS}`);
-    yield context.df.createTimer(new Date(context.df.currentUtcDateTime.getTime() + TICKET_REDELIVERY_DELAY_MS));
-    delivered = yield* tryDeliverTicket();
+    report(CheckoutStatus.PROCESSING_PAYMENT, 'booking');
+    let booked: ConfirmResult;
+    try {
+      booked = yield* call<ConfirmResult>(Activities.confirmBooking, RetryPolicies.database, {
+        chargeId: charge.chargeId,
+      });
+    } catch {
+      // Retries exhausted: an earlier attempt may still have committed the booking, so
+      // neither refunding nor releasing is safe. Money and seats stay put for an operator.
+      return yield* fail(
+        `booking outcome unknown after payment (charge ${charge.chargeId}); reconcile`,
+        false,
+      );
+    }
+    if (booked.outcome !== 'booked') {
+      // Compensation: this checkout's own charge (unique key) is refunded before the seats go back.
+      report(CheckoutStatus.PROCESSING_PAYMENT, 'refunding');
+      let refund: RefundResult;
+      try {
+        refund = yield* call<RefundResult>(Activities.refund, RetryPolicies.payment, {
+          chargeId: charge.chargeId,
+        });
+      } catch {
+        refund = { kind: 'rejected', code: 'retries_exhausted' };
+      }
+      if (refund.kind === 'rejected') {
+        return yield* fail(
+          `refund of charge ${charge.chargeId} failed (${refund.code}); refund manually`,
+          false,
+        );
+      }
+      return booked.outcome === 'cancel_requested'
+        ? yield* release(CheckoutStatus.CANCELLED, 'cancelled by customer during payment; charge refunded')
+        : yield* release(CheckoutStatus.REFUNDED, 'seats could not be booked after payment; charge refunded');
+    }
+
+    // Booked. Publish CONFIRMED once the ticket is out; if mail is down, confirm anyway
+    // and keep redelivering on durable timers — the booking already stands.
+    report(CheckoutStatus.PROCESSING_PAYMENT, 'sending ticket');
+    let delivered = yield* tryDeliverTicket();
+    yield* call<CheckoutStatus>(Activities.complete, RetryPolicies.database);
+    for (let round = 1; !delivered && round <= TICKET_REDELIVERY_ROUNDS; round += 1) {
+      report(CheckoutStatus.CONFIRMED, `ticket redelivery ${round}/${TICKET_REDELIVERY_ROUNDS}`);
+      yield context.df.createTimer(
+        new Date(context.df.currentUtcDateTime.getTime() + TICKET_REDELIVERY_DELAY_MS),
+      );
+      delivered = yield* tryDeliverTicket();
+    }
+    if (!delivered) {
+      if (!context.df.isReplaying)
+        logger.error('checkout.ticket.undelivered', { ...ref, bookingReference: booked.bookingReference });
+    }
+    return yield* end(CheckoutStatus.CONFIRMED);
   }
-  if (!delivered) {
-    if (!context.df.isReplaying) logger.error('checkout.ticket.undelivered', { ...ref, bookingReference: booked.bookingReference });
-  }
-  return yield* end(CheckoutStatus.CONFIRMED);
 
   function* tryDeliverTicket(): Generator<Task, boolean, unknown> {
     try {

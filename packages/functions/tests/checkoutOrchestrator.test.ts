@@ -142,6 +142,36 @@ describe('checkout orchestrator: compensation', () => {
   });
 });
 
+describe('checkout orchestrator: a step exhausts its retries', () => {
+  it('fails and releases the seats when no charge was attempted', () => {
+    const run = runOrchestrator(happy({ [A.release]: exhausted }, { first: 'timer' }));
+
+    expect(run.status).toBe('FAILED');
+    expect(run.calls.at(-1)).toMatchObject({ name: A.fail, input: { releaseSeats: true } });
+    expect(String(run.calls.at(-1)?.input.reason)).toContain('awaiting payment');
+  });
+
+  it('fails without waiting when the seats could not even be held', () => {
+    const run = runOrchestrator(happy({ [A.holdSeats]: exhausted }));
+
+    expect(run.status).toBe('FAILED');
+    expect(run.names).toEqual([A.holdSeats, A.fail]);
+  });
+
+  it('fails keeping the seats once a charge was attempted', () => {
+    const run = runOrchestrator(happy({ [A.complete]: exhausted }));
+
+    expect(run.status).toBe('FAILED');
+    expect(run.calls.at(-1)).toMatchObject({ name: A.fail, input: { releaseSeats: false } });
+    expect(run.names).not.toContain(A.refund);
+  });
+
+  it('records FAILED once: if that cannot be written either, the orchestration itself fails', () => {
+    expect(() => runOrchestrator(happy({ [A.charge]: exhausted, [A.fail]: exhausted }))).toThrow();
+    expect(() => runOrchestrator(happy({ [A.holdSeats]: exhausted, [A.fail]: exhausted }))).toThrow();
+  });
+});
+
 describe('checkout orchestrator: ticket delivery', () => {
   it('confirms despite a mail outage and keeps redelivering on durable timers, bounded', () => {
     const run = runOrchestrator(happy({ [A.sendTicket]: exhausted }));
