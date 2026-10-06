@@ -87,6 +87,7 @@ stateDiagram-v2
 | Mailer, QR, email templates, `sendTicketEmail` | `domain/src/tickets` (`Mailer` port, `createMailer`, `deliverTicket`) | Ticket delivery is on the critical path; delivery is recorded so retries do not resend. |
 | Text logger | `domain/src/observability/logger.ts` | One structured JSON logger for every host (T3). |
 | — | `domain/src/checkout` | The Checkout aggregate and state machine driven by the saga. |
+| `payment-sim/Dockerfile` | Two added `COPY` lines for the `domain` and `functions` manifests | `npm ci` inside the image resolves every workspace's `package.json`. The simulator's code and behaviour are untouched. |
 
 ### Legacy checkout endpoints and jobs
 
@@ -125,6 +126,8 @@ No legacy assertion was changed or removed.
 - **Custom status:** `{ status, step, checkoutId, correlationId }` (e.g. `step: "charging"`), visible in the DTS dashboard.
 - **Determinism:** no I/O, clock or randomness in the orchestrator; time comes from `context.df.currentUtcDateTime`; logs are emitted only when `!isReplaying`.
 - **Lifecycle:** the orchestration completes when the checkout reaches a terminal status. Abandoned AWAITING_PAYMENT checkouts (orchestration lost) are expired by the recovery timer after `CHECKOUT_RECOVERY_GRACE_SECONDS`.
+- **No checkout is left non-terminal behind a dead orchestration.** A top-level handler catches any activity that exhausts its retries without a branch of its own (hold, begin, release, complete) and records FAILED with the step it stopped at: seats released if no charge was attempted, kept otherwise. Only when FAILED itself cannot be written does the orchestration fail (RUNBOOK).
+- **Events that cannot be delivered:** `POST /payment` on a checkout whose instance no longer exists closes it as FAILED with its seats released (nothing was charged) and answers 409; any other delivery error answers 503 so the client retries. `POST /cancel` whose event cannot be delivered cancels an AWAITING_PAYMENT checkout directly in PostgreSQL (`cancelUnpaidCheckout`); during payment the recorded request is enough.
 - **Why not Durable Entities or critical sections:** the legacy API also writes seats (holds, waitlist), and it does not go through entities. The only lock that protects every writer is the PostgreSQL row lock in the system of record. An entity lock would add a second, partial source of mutual exclusion.
 
 ## Compensation matrix
@@ -139,9 +142,9 @@ No legacy assertion was changed or removed.
 | Refund | `POST /v1/refunds` | — (it *is* the compensation) | `{checkoutId}:refund` | Same key replays; `409 charge_already_refunded` counts as done. Exhausted or rejected → FAILED "refund manually", seats kept |
 | Send ticket | Email QR ticket, record `ticketEmailSentAt` | None needed (the booking stands) | `Booking.ticketEmailSentAt` | Crash between send and record can resend (at-least-once). Failure → CONFIRMED anyway, then 3 redelivery rounds |
 | Complete | PROCESSING_PAYMENT → CONFIRMED | — | Status guard | Idempotent |
-| Customer cancel | `cancelRequestedAt` recorded, then `CancelRequested` raised | Before payment: release CANCELLED. During payment: refund + CANCELLED | Row lock; recorded once | If the event arrives after the orchestration stopped waiting, `confirmCheckoutBooking` still sees the recorded request and refunds |
+| Customer cancel | `cancelRequestedAt` recorded, then `CancelRequested` raised | Before payment: release CANCELLED. During payment: refund + CANCELLED | Row lock; recorded once | If the event arrives after the orchestration stopped waiting, `confirmCheckoutBooking` still sees the recorded request and refunds. If the event cannot be delivered at all, an AWAITING_PAYMENT checkout is cancelled directly under its row lock |
 
-Guarantees: CONFIRMED ⇒ exactly one net succeeded charge equal to `amountDue` and an eventually delivered ticket. Every other terminal status except FAILED ⇒ zero net charge. FAILED keeps any money and seats untouched for an operator ([RUNBOOK.md](RUNBOOK.md)).
+Guarantees: CONFIRMED ⇒ exactly one net succeeded charge equal to `amountDue` and a ticket delivered eventually within a bounded window (see Deviations). Every other terminal status except FAILED ⇒ zero net charge. FAILED keeps any money and seats untouched for an operator ([RUNBOOK.md](RUNBOOK.md)).
 
 ## Transaction inventory
 
@@ -149,7 +152,7 @@ All transactions go through `runInTransaction`: **READ COMMITTED**, `lock_timeou
 
 | Transaction | Owning activity / caller | Rows locked, in order | On deadlock (40P01) / serialization (40001) / lock timeout (55P03) |
 |---|---|---|---|
-| `createCheckout` | `POST /checkouts` | Inserts Checkout (upsert by id) | Retried by the runner |
+| `createCheckout` | `POST /checkouts` | None: a single-statement upsert by id, outside the runner | Not retried (a lone insert takes no contended lock); an error is an HTTP 500 and the client starts a new checkout |
 | `holdCheckoutSeats` | `holdCheckoutSeats` | Checkout `FOR UPDATE` → ShowSeat (ordered) → lapsed Holds → new Hold | Runner retries ≤3; then the activity's Durable retry (4 attempts) |
 | `beginCheckoutPayment` | `beginCheckoutPayment` | Checkout → hold's ShowSeats → Hold | Same |
 | `confirmCheckoutBooking` | `confirmCheckoutBooking` | Checkout → ShowSeat → Hold → Booking insert (≤3 extra attempts on reference collision) | Same; exhausted → FAILED |
@@ -157,6 +160,7 @@ All transactions go through `runInTransaction`: **READ COMMITTED**, `lock_timeou
 | `releaseCheckout` | `releaseCheckout`, recovery timer | Checkout → ShowSeat → Hold | Same |
 | `failCheckout` | `failCheckout`, `POST /checkouts` on start failure | Checkout (→ ShowSeat → Hold when releasing) | Same |
 | `requestCheckoutCancel` | `POST /checkouts/{id}/cancel` | Checkout | Runner retries; then HTTP 500 (client may retry) |
+| `cancelUnpaidCheckout` | `POST /checkouts/{id}/cancel` when the event cannot be delivered | Checkout → ShowSeat → Hold | Same |
 | `placeHold` | Legacy `POST /shows/:id/holds` | ShowSeat (ordered) → lapsed Holds → new Hold | Runner retries; then HTTP 500 |
 | `releaseHold` | Legacy `DELETE /holds/:id`, sweeper | ShowSeat (ordered) → Hold | Runner retries; the sweeper retries next pass |
 | `convertHoldToBooking` | Legacy `POST /bookings` | ShowSeat → Hold → Booking insert | Runner retries; then refund + HTTP error |
@@ -206,6 +210,9 @@ Retry layers are not multiplied: the HTTP adapter makes one attempt, the activit
 | Activity retried after commit | Idempotent domain operations | `domain/checkout.test.ts` "every step idempotent"; `domain/holds.test.ts`; `domain/bookings.test.ts` |
 | Functions host crashes mid-charge | DTS redelivers; same key | `npm run test:restart` (`scripts/restart-drill.ts`) |
 | Orchestration lost (emulator restart) | Recovery timer expires AWAITING_PAYMENT after grace | `domain/checkout.test.ts` "expireAbandonedCheckouts…" |
+| Payment submitted to a lost orchestration | 409, FAILED, seats released, no charge | `acceptance/…failures…` "refuses payment with 409, charges nothing and closes the checkout as FAILED" |
+| Cancel on a lost orchestration | Cancelled directly, AWAITING_PAYMENT only | `acceptance/…failures…` "still cancels a checkout awaiting payment"; `domain/checkout.test.ts` "cancelling without the orchestration" |
+| A database step exhausts its retries (hold, release, complete) | FAILED with the step; seats released only if no charge was attempted | unit "a step exhausts its retries" (4 tests) |
 | Sweeper or lazy expiry vs payment in flight | CAPTURING is immune | `domain/checkout.test.ts` "never frees a CAPTURING hold…", "the sweeper skips them" |
 | Payment simulator reset (charge ids restart) | Uniqueness on our key, not the provider id | `domain/bookings.test.ts` "are unique by our payment key…" |
 | Legacy endpoints on a checkout hold | 409 | `api/checkout-guards.test.ts` |
@@ -233,6 +240,7 @@ Retry layers are not multiplied: the HTTP adapter makes one attempt, the activit
 - **Legacy checkout endpoints are kept, not delegated.** `POST /shows/:id/holds` and `POST /bookings` remain as adapters over the shared domain, guarded against checkout-owned holds, because the existing tests and older clients depend on them. The SPA and new clients use the Checkout API.
 - **Cancel after the booking is committed returns 409.** The contract reserves 409 for terminal checkouts; a checkout whose booking already exists is treated as effectively terminal, so "CANCELLED ⇒ zero net charge" holds without cancelling bookings.
 - **Ticket email is at-least-once**, not exactly-once (crash window between send and record).
+- **"Eventually delivered" is bounded.** Delivery is tried 4 times, then in 3 more rounds 5 minutes apart. After that the checkout stays CONFIRMED, `checkout.ticket.undelivered` is logged, and the customer still has the QR in *My Bookings*; an operator resends it (RUNBOOK).
 - **No Durable Entities or critical sections:** PostgreSQL row locks are the single mutual-exclusion mechanism (see Orchestration design).
 - **Expiry is judged by the database clock;** the durable timer can fire up to the host–database clock skew early or late.
 - **Payment tokens appear in the orchestration history** (event payload); acceptable for the simulator's test tokens, not for real card data.

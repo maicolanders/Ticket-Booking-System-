@@ -49,6 +49,9 @@ In the DTS dashboard, open instance `<checkoutId>`: the custom status `step` sho
 | PROCESSING_PAYMENT, no instance or instance Failed | Money may have moved | Check the ledger by `<checkoutId>:charge`. Charged with no booking → refund (below), then release. Not charged → release. |
 | FAILED, `failureReason` "payment outcome unknown" | Charge unresolved after retries; seats kept held | Check the ledger. Charged → refund, then release. Absent → release. |
 | FAILED, "refund … failed; refund manually" | Customer was charged, booking not made | Refund (below), then release. |
+| FAILED, "orchestration lost before payment" | Payment was submitted but the instance was gone | Nothing to do: no charge was made and the seats were released. |
+| FAILED, "checkout stopped while … no charge was attempted" | A database step ran out of retries before any charge | Seats were released. Check database health; the customer can start again. |
+| FAILED, "checkout stopped while … after a charge was attempted" | A step ran out of retries with money possibly moved; seats kept | Treat as "booking outcome unknown" below. If the booking exists and only the last step failed, the customer has a valid ticket. |
 | FAILED, "booking outcome unknown" | Charge succeeded; booking may exist | If `Booking.paymentKey = '<checkoutId>:charge'` exists, the customer has a ticket: leave it. Otherwise refund, then release. |
 | CONFIRMED, customer has no email | Ticket redelivery exhausted (`checkout.ticket.undelivered`) | The booking is valid. Once mail works, the customer can see the QR in *My Bookings* (`GET /api/bookings/<reference>` returns `qrDataUrl`); send it to them from there. |
 

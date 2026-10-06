@@ -352,7 +352,7 @@ Run `npm run infra:up` first. One command per level:
 | Integration | `npm run test:integration` | `@ticket/domain` against real PostgreSQL and the payment simulator: locks, lock timeouts and retries, idempotency of every checkout step, contention, pricing, payment gateway outcomes, ticket delivery, recovery | infra |
 | Legacy API | `npm test` | The original in-process API suite (holds, TTL, waitlist) plus legacy payment and checkout-guard tests | infra |
 | Simulator | `npm run test:sim` | The payment provider in isolation | nothing |
-| Acceptance | `npm run test:acceptance` | Black-box Checkout API: the public contract suite plus failure scenarios (concurrent payments, `tok_flaky`, `tok_timeout`, cancel during payment, seat contention, 401/400/404/409) | infra, legacy API, Functions app with `HOLD_TTL_SECONDS=10` |
+| Acceptance | `npm run test:acceptance` | Black-box Checkout API: the public contract suite plus failure scenarios (concurrent payments, `tok_flaky`, `tok_timeout`, cancel during payment, seat contention, lost orchestration, 401/400/404/409) | infra, legacy API, Functions app with `HOLD_TTL_SECONDS=10` |
 | Restart drill | `npm run test:restart` | SIGKILLs the Functions host mid-charge, restarts it, and checks one charge and a CONFIRMED checkout | infra, seeded legacy API, port 7071 **free** (it runs its own host) |
 
 For the acceptance level, start the Functions app with a short hold so the expiry
