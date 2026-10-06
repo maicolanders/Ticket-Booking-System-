@@ -129,7 +129,7 @@ activity<CheckoutRef & { chargeId: string }, RefundResult>(
 activity<CheckoutRef, 'sent' | 'already_sent'>(Activities.sendTicket, async ({ checkoutId }, log) => {
   const checkout = await loadCheckout(checkoutId);
   if (!checkout.bookingId) throw new Error(`Checkout ${checkoutId} has no booking`);
-  const result = await deliverTicket(checkout.bookingId, mailer);
+  const result = await deliverTicket(checkout.bookingId, mailer, log);
   log.info('checkout.ticket.delivered', { result, bookingReference: checkout.bookingReference });
   return result;
 });
